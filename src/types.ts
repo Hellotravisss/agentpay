@@ -20,6 +20,12 @@ export interface PaymentRequirement {
   /** The resource (URL) being purchased. */
   resource: string;
   description?: string;
+  /** On-chain asset contract address (x402), e.g. USDC on Base Sepolia. */
+  asset?: string;
+  /** Seconds the payment authorization should stay valid (x402 maxTimeoutSeconds). */
+  maxTimeoutSeconds?: number;
+  /** Scheme-specific extras; for x402 "exact" this carries the EIP-712 domain { name, version }. */
+  extra?: { name?: string; version?: string };
 }
 
 /** Everything the policy engine needs to decide on one payment. */

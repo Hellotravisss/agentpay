@@ -24,7 +24,7 @@ Agents never hold payment credentials. They call paid resources **through** the 
 
 ```bash
 npm install
-npm test        # 29 tests: money math, FX, policy rules, cross-rail e2e
+npm test        # 32 tests: money math, FX, policy rules, x402 signatures, cross-rail e2e
 npm run demo    # walkthrough: 2 rails, 2 currencies, 1 unified USD budget
 npm run dev     # start the gateway on :4020 with policies/example.json
 ```
@@ -74,16 +74,24 @@ Successful paid responses carry `X-Gateway-Payment-Id`, `X-Gateway-Rail`, and `X
 Rails implement one interface (`src/rails/rail.ts`): `supports(network)` + `pay(ctx) -> receipt`. Adding a rail never touches policy, FX, or routing code. Included:
 
 - **`MockRail`** — instant in-process settlement; instantiate several to simulate a multi-rail deployment.
-- **`X402Rail`** — adapter for [Coinbase's x402](https://www.x402.org/) protocol; bring your own signer (e.g. a CDP or viem wallet) via `signPayment`.
+- **`X402Rail`** — adapter for [Coinbase's x402](https://www.x402.org/) protocol, with a **real client-side payment implementation**: `createEip3009Signer` produces signed EIP-3009 `transferWithAuthorization` payloads (the X-PAYMENT header) for USDC on Base / Base Sepolia. Signing is fully offline; the merchant's facilitator settles on-chain. Signatures are verified cryptographically in the test suite.
 - **`AlipayActRail`** — adapter shaped for Alipay's agent-payment stack (AI付 under the ACT delegation model); bring your merchant integration via `executePayment`.
 
-The gateway never holds raw keys — credentials live inside the rail callbacks you supply. Planned: Google AP2.
+Credentials live inside the rail callbacks you supply — the gateway core never touches keys. Planned: Google AP2.
+
+### Buying a real x402 resource on Base Sepolia
+
+```bash
+# 1. fund a throwaway wallet with testnet USDC: https://faucet.circle.com (Base Sepolia)
+# 2. pick an x402-protected URL settling on base-sepolia
+X402_PRIVATE_KEY=0x... TARGET_URL=https://... npx tsx demo/x402-live.ts
+```
 
 ## Status & roadmap
 
-This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit log, and 402 proxy flow are tested and working end to end against mock rails. Not yet built:
+This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit log, and 402 proxy flow are tested and working end to end against mock rails; the x402 client-side payment (EIP-3009 signing) is real and cryptographically verified in tests. Not yet built:
 
-- [ ] Real x402 settlement against Base Sepolia (signer integration + facilitator verification)
+- [ ] End-to-end x402 settlement against a live facilitator (needs a funded testnet wallet — see `demo/x402-live.ts`)
 - [ ] Real Alipay AI付/ACT settlement (requires merchant onboarding)
 - [ ] Live FX rate provider with caching and staleness limits
 - [ ] Persistent storage beyond JSONL (SQLite/Postgres)

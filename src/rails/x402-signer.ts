@@ -1,0 +1,125 @@
+import { randomBytes } from "node:crypto";
+import { privateKeyToAccount } from "viem/accounts";
+import type { Hex } from "viem";
+import type { PaymentContext } from "../types.js";
+import { parseAmount } from "../money.js";
+
+/**
+ * Real x402 "exact" scheme client-side payment: an EIP-3009
+ * transferWithAuthorization signature over the requested asset (USDC),
+ * base64-encoded into the X-PAYMENT header. Signing is fully offline — the
+ * merchant's facilitator verifies the signature and settles it on-chain, so
+ * the gateway needs no RPC connection, only the agent treasury's key.
+ */
+
+export const CHAIN_IDS: Record<string, number> = {
+  base: 8453,
+  "base-sepolia": 84532,
+};
+
+/** Circle's canonical USDC deployments, used when a 402 omits the asset address. */
+export const DEFAULT_USDC: Record<string, Hex> = {
+  base: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+};
+
+export const EIP3009_TYPES = {
+  TransferWithAuthorization: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "validAfter", type: "uint256" },
+    { name: "validBefore", type: "uint256" },
+    { name: "nonce", type: "bytes32" },
+  ],
+} as const;
+
+export interface X402Authorization {
+  from: Hex;
+  to: Hex;
+  value: string;
+  validAfter: string;
+  validBefore: string;
+  nonce: Hex;
+}
+
+export interface X402PaymentPayload {
+  x402Version: number;
+  scheme: string;
+  network: string;
+  payload: {
+    signature: Hex;
+    authorization: X402Authorization;
+  };
+}
+
+export interface Eip3009SignerOptions {
+  /** Hex private key of the agent treasury wallet (fund it with testnet USDC for Base Sepolia). */
+  privateKey: Hex;
+  /** Injectable clock for tests. */
+  now?: () => number;
+}
+
+/**
+ * Build a signPayment callback for X402Rail. Returns the base64 X-PAYMENT
+ * header value carrying a signed EIP-3009 authorization the facilitator can
+ * settle. Amounts are converted to 6-dp atomic units (USDC precision).
+ */
+export function createEip3009Signer(options: Eip3009SignerOptions) {
+  const account = privateKeyToAccount(options.privateKey);
+  const now = options.now ?? Date.now;
+
+  return async (ctx: PaymentContext): Promise<string> => {
+    const { requirement: req } = ctx;
+    const chainId = CHAIN_IDS[req.network];
+    if (chainId === undefined) {
+      throw new Error(`Unknown x402 network "${req.network}"`);
+    }
+    const asset = (req.asset as Hex | undefined) ?? DEFAULT_USDC[req.network];
+    if (!asset) {
+      throw new Error(`No asset address in requirement and no default USDC for "${req.network}"`);
+    }
+
+    const nowSec = Math.floor(now() / 1000);
+    const authorization: X402Authorization = {
+      from: account.address,
+      to: req.payTo as Hex,
+      value: parseAmount(req.amount).toString(),
+      validAfter: "0",
+      validBefore: String(nowSec + (req.maxTimeoutSeconds ?? 600)),
+      nonce: `0x${randomBytes(32).toString("hex")}` as Hex,
+    };
+
+    const signature = await account.signTypedData({
+      domain: {
+        name: req.extra?.name ?? "USDC",
+        version: req.extra?.version ?? "2",
+        chainId,
+        verifyingContract: asset,
+      },
+      types: EIP3009_TYPES,
+      primaryType: "TransferWithAuthorization",
+      message: {
+        from: authorization.from,
+        to: authorization.to,
+        value: BigInt(authorization.value),
+        validAfter: BigInt(authorization.validAfter),
+        validBefore: BigInt(authorization.validBefore),
+        nonce: authorization.nonce,
+      },
+    });
+
+    const payload: X402PaymentPayload = {
+      x402Version: 1,
+      scheme: req.scheme,
+      network: req.network,
+      payload: { signature, authorization },
+    };
+    return Buffer.from(JSON.stringify(payload)).toString("base64");
+  };
+}
+
+/** Decode an X-PAYMENT header produced by createEip3009Signer (for tests/inspection). */
+export function decodeXPayment(header: string): X402PaymentPayload {
+  return JSON.parse(Buffer.from(header, "base64").toString("utf8")) as X402PaymentPayload;
+}

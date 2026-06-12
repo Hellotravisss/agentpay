@@ -15,6 +15,16 @@ export { createGateway, route, type Gateway, type GatewayOptions } from "./gatew
 export { FixedRateProvider, convert, type RateProvider } from "./fx/rates.js";
 export { MockRail, type MockRailOptions } from "./rails/mock.js";
 export { X402Rail, type X402RailConfig } from "./rails/x402.js";
+export {
+  createEip3009Signer,
+  decodeXPayment,
+  CHAIN_IDS,
+  DEFAULT_USDC,
+  EIP3009_TYPES,
+  type Eip3009SignerOptions,
+  type X402Authorization,
+  type X402PaymentPayload,
+} from "./rails/x402-signer.js";
 export { AlipayActRail, type AlipayActRailConfig } from "./rails/alipay.js";
 export type { PaymentRail } from "./rails/rail.js";
 

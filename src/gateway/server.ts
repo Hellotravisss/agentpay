@@ -258,6 +258,9 @@ async function parseRequirements(res: Response, target: string): Promise<Payment
     }
     if (!amount || !currency) continue;
 
+    const extra = (typeof raw.extra === "object" && raw.extra !== null ? raw.extra : undefined) as
+      | { name?: string; version?: string }
+      | undefined;
     out.push({
       scheme: typeof raw.scheme === "string" ? raw.scheme : "exact",
       network: typeof raw.network === "string" ? raw.network : "mock",
@@ -266,6 +269,9 @@ async function parseRequirements(res: Response, target: string): Promise<Payment
       payTo: raw.payTo,
       resource: typeof raw.resource === "string" ? raw.resource : target,
       description: typeof raw.description === "string" ? raw.description : undefined,
+      asset: typeof raw.asset === "string" ? raw.asset : undefined,
+      maxTimeoutSeconds: typeof raw.maxTimeoutSeconds === "number" ? raw.maxTimeoutSeconds : undefined,
+      extra,
     });
   }
   return out;
