@@ -1,0 +1,23 @@
+{
+  "name": "agent-pay-gateway",
+  "version": "0.1.0",
+  "description": "Spend-policy gateway for AI agent payments: budgets, per-transaction limits, payee allowlists, and full audit logging in front of agent payment rails (x402-style).",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "test": "vitest run",
+    "demo": "tsx demo/run-demo.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "~5.8.2",
+    "vitest": "^3.0.0"
+  }
+}

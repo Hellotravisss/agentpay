@@ -1,0 +1,27 @@
+{
+  "defaults": {
+    "enabled": true,
+    "currency": "USDC",
+    "perTransactionMax": "1.00",
+    "dailyBudget": "10.00",
+    "maxTransactionsPerDay": 200
+  },
+  "agents": [
+    {
+      "agentId": "research-bot",
+      "enabled": true,
+      "currency": "USDC",
+      "perTransactionMax": "0.25",
+      "dailyBudget": "0.15",
+      "monthlyBudget": "3.00",
+      "payeeBlocklist": ["merchant-shady"]
+    },
+    {
+      "agentId": "ops-bot",
+      "enabled": true,
+      "currency": "USDC",
+      "payeeAllowlist": ["merchant-weather"],
+      "dailyBudget": "5.00"
+    }
+  ]
+}
