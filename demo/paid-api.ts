@@ -1,14 +1,22 @@
 import { createServer, type Server } from "node:http";
 
 /**
- * A toy x402-style merchant: every route costs money. Requests without a
- * valid X-PAYMENT header get 402 + payment requirements; requests with a
- * mock-rail proof get the content. Used by run-demo.ts and the e2e test.
+ * A toy multi-rail merchant: every route costs money and may accept several
+ * payment options (e.g. USDC on an x402-style network AND CNY on an
+ * Alipay-style network). Requests without a valid X-PAYMENT header get 402 +
+ * the full accepts list; requests with a mock-rail proof get the content.
+ * Used by run-demo.ts and the e2e test.
  */
+export interface PaidOption {
+  network: string;
+  amount: string;
+  currency: string;
+  payTo: string;
+}
+
 export interface PaidRoute {
   path: string;
-  amount: string;
-  payTo: string;
+  options: PaidOption[];
   body: unknown;
 }
 
@@ -24,7 +32,7 @@ export function createPaidApi(routes: PaidRoute[]): Server {
     }
 
     const payment = req.headers["x-payment"];
-    if (typeof payment === "string" && payment.startsWith("mock:")) {
+    if (typeof payment === "string" && /^[\w-]+:/.test(payment)) {
       res.statusCode = 200;
       return res.end(JSON.stringify(route.body));
     }
@@ -33,17 +41,15 @@ export function createPaidApi(routes: PaidRoute[]): Server {
     res.end(
       JSON.stringify({
         x402Version: 1,
-        accepts: [
-          {
-            scheme: "exact",
-            network: "mock",
-            amount: route.amount,
-            currency: "USDC",
-            payTo: route.payTo,
-            resource: `http://localhost${route.path}`,
-            description: `Access to ${route.path}`,
-          },
-        ],
+        accepts: route.options.map((o) => ({
+          scheme: "exact",
+          network: o.network,
+          amount: o.amount,
+          currency: o.currency,
+          payTo: o.payTo,
+          resource: `http://localhost${route.path}`,
+          description: `Access to ${route.path}`,
+        })),
       }),
     );
   });

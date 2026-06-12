@@ -52,14 +52,26 @@ export interface PaymentReceipt {
   timestamp: number;
   /** Rail-specific proof (tx hash, signed payload, ...). Forwarded upstream as X-PAYMENT. */
   proof: string;
+  /** Amount converted into the agent's policy currency at execution time. */
+  baseAmount?: string;
+  baseCurrency?: string;
 }
 
 /** Spend limits for a single agent. All amounts are decimal strings in `currency`. */
 export interface AgentPolicy {
   agentId: string;
   enabled: boolean;
-  /** Currency the limits below are denominated in. Payments in other currencies are denied. */
+  /**
+   * Base currency the limits below are denominated in. Payments in other
+   * currencies are converted via the gateway's RateProvider; payments with
+   * no available rate are denied.
+   */
   currency: string;
+  /**
+   * Rail names in preference order for routing when a merchant accepts
+   * several payment options. Unlisted rails rank after listed ones.
+   */
+  railPreference?: string[];
   perTransactionMax?: string;
   dailyBudget?: string;
   monthlyBudget?: string;
@@ -73,6 +85,12 @@ export interface PolicyConfig {
   /** Applied to every agent unless the agent's own policy overrides the field. */
   defaults?: Partial<Omit<AgentPolicy, "agentId">>;
   agents: AgentPolicy[];
+  /**
+   * Static conversion rates for cross-rail budgets, e.g. { "CNY:USD": "0.14" }.
+   * Used to build a FixedRateProvider when the gateway is started from a
+   * config file; programmatic embedders can pass any RateProvider instead.
+   */
+  fxRates?: Record<string, string>;
 }
 
 export type AuditEvent =

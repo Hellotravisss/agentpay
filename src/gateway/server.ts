@@ -1,14 +1,17 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { PaymentRequirement, PolicyConfig } from "../types.js";
+import type { AgentPolicy, PaymentRequirement, PolicyConfig } from "../types.js";
 import type { PaymentRail } from "../rails/rail.js";
 import { SpendLedger, startOfUtcDay, startOfUtcMonth } from "../ledger/ledger.js";
 import { AuditLog } from "../audit/audit.js";
 import { evaluate, resolvePolicy } from "../policy/engine.js";
-import { formatAmount } from "../money.js";
+import { formatAmount, parseAmount } from "../money.js";
+import { convert, FixedRateProvider, type RateProvider } from "../fx/rates.js";
 
 export interface GatewayOptions {
   policyConfig: PolicyConfig;
   rails: PaymentRail[];
+  /** Currency conversion for cross-rail budgets. Defaults to identity-only. */
+  rates?: RateProvider;
   ledger?: SpendLedger;
   audit?: AuditLog;
   /** Map of API key -> agentId. When set, agents must send `Authorization: Bearer <key>`. */
@@ -29,13 +32,16 @@ export interface Gateway {
  *
  *   GET /proxy?url=<target>   with   Authorization / X-Agent-Id
  *
- * On a 402 from the target, the gateway checks the agent's spend policy,
- * executes the payment on a matching rail, retries with X-PAYMENT, and
- * returns the unlocked response. Every decision is written to the audit log.
+ * On a 402 from the target, the gateway collects every payment option the
+ * merchant accepts, routes to one rail (agent's rail preference first, then
+ * cheapest in the policy's base currency), checks the agent's spend policy,
+ * executes the payment, retries with X-PAYMENT, and returns the unlocked
+ * response. Every decision is written to the audit log.
  */
 export function createGateway(options: GatewayOptions): Gateway {
   const ledger = options.ledger ?? new SpendLedger();
   const audit = options.audit ?? new AuditLog();
+  const rates = options.rates ?? new FixedRateProvider({});
   const now = options.now ?? Date.now;
 
   const server = createServer((req, res) => {
@@ -72,12 +78,22 @@ export function createGateway(options: GatewayOptions): Gateway {
     const policy = resolvePolicy(options.policyConfig, agentId);
     if (!policy) return sendJson(res, 404, { error: "unknown_agent", agentId });
     const t = now();
+
+    const perRail: Record<string, { transactions: number; amounts: Record<string, string> }> = {};
+    for (const r of ledger.receiptsFor(agentId)) {
+      const entry = (perRail[r.rail] ??= { transactions: 0, amounts: {} });
+      entry.transactions += 1;
+      const prev = entry.amounts[r.currency] ? parseAmount(entry.amounts[r.currency]!) : 0n;
+      entry.amounts[r.currency] = formatAmount(prev + parseAmount(r.amount));
+    }
+
     sendJson(res, 200, {
       agentId,
       currency: policy.currency,
       spentToday: formatAmount(ledger.spentSince(agentId, policy.currency, startOfUtcDay(t), t)),
       spentThisMonth: formatAmount(ledger.spentSince(agentId, policy.currency, startOfUtcMonth(t), t)),
       transactionsToday: ledger.transactionsSince(agentId, startOfUtcDay(t), t),
+      perRail,
       limits: {
         perTransactionMax: policy.perTransactionMax ?? null,
         dailyBudget: policy.dailyBudget ?? null,
@@ -111,26 +127,31 @@ export function createGateway(options: GatewayOptions): Gateway {
     }
 
     // --- 402 handshake ---
-    const requirement = await parseRequirement(first, target);
-    if (!requirement) {
+    const requirements = await parseRequirements(first, target);
+    if (requirements.length === 0) {
       return sendJson(res, 502, { error: "unparseable_402", message: "Target returned 402 without recognizable payment requirements" });
     }
 
-    const rail = options.rails.find((r) => r.supports(requirement.network));
-    if (!rail) {
-      return sendJson(res, 502, { error: "no_rail", message: `No configured rail settles on network "${requirement.network}"` });
-    }
-
-    const ctx = { agentId, requirement, timestamp: now() };
+    const timestamp = now();
     const policy = resolvePolicy(options.policyConfig, agentId);
     if (!policy) {
-      audit.log("policy_missing", agentId, { requirement }, ctx.timestamp);
+      audit.log("policy_missing", agentId, { requirements }, timestamp);
       return sendJson(res, 403, { error: "policy_missing", message: `No spend policy configured for agent "${agentId}"` });
     }
 
-    const decision = evaluate(policy, ctx, ledger);
+    const chosen = route(requirements, options.rails, policy, rates);
+    if (!chosen) {
+      return sendJson(res, 502, {
+        error: "no_rail",
+        message: `No configured rail settles any of the offered networks: ${requirements.map((r) => r.network).join(", ")}`,
+      });
+    }
+    const { requirement, rail } = chosen;
+    const ctx = { agentId, requirement, timestamp };
+
+    const decision = evaluate(policy, ctx, ledger, rates);
     if (!decision.allow) {
-      audit.log("payment_denied", agentId, { requirement, rule: decision.rule, reason: decision.reason }, ctx.timestamp);
+      audit.log("payment_denied", agentId, { requirement, rail: rail.name, rule: decision.rule, reason: decision.reason }, timestamp);
       return sendJson(res, 403, { error: "payment_denied", rule: decision.rule, reason: decision.reason });
     }
 
@@ -138,18 +159,24 @@ export function createGateway(options: GatewayOptions): Gateway {
     try {
       receipt = await rail.pay(ctx);
     } catch (err) {
-      audit.log("payment_failed", agentId, { requirement, rail: rail.name, message: String(err) }, ctx.timestamp);
+      audit.log("payment_failed", agentId, { requirement, rail: rail.name, message: String(err) }, timestamp);
       return sendJson(res, 502, { error: "payment_failed", message: String(err) });
     }
 
+    // evaluate() already proved the rate exists
+    const rate = rates.rate(requirement.currency, policy.currency)!;
+    receipt.baseAmount = formatAmount(convert(parseAmount(requirement.amount), rate));
+    receipt.baseCurrency = policy.currency;
+
     ledger.record(receipt);
-    audit.log("payment_executed", agentId, { receipt }, ctx.timestamp);
+    audit.log("payment_executed", agentId, { receipt }, timestamp);
 
     const second = await fetch(target, {
       ...upstreamInit,
       headers: { ...forwardableHeaders(req), "X-PAYMENT": receipt.proof },
     });
     res.setHeader("X-Gateway-Payment-Id", receipt.id);
+    res.setHeader("X-Gateway-Rail", rail.name);
     res.setHeader("X-Gateway-Payment-Amount", `${receipt.amount} ${receipt.currency}`);
     return relay(res, second);
   }
@@ -167,42 +194,81 @@ export function createGateway(options: GatewayOptions): Gateway {
 }
 
 /**
- * Normalize a 402 response body into a PaymentRequirement. Accepts both this
+ * Pick one (requirement, rail) pair out of everything the merchant accepts:
+ * the agent's railPreference order wins, ties broken by cheapest cost in the
+ * policy's base currency (unconvertible options rank last).
+ */
+export function route(
+  requirements: PaymentRequirement[],
+  rails: PaymentRail[],
+  policy: AgentPolicy,
+  rates: RateProvider,
+): { requirement: PaymentRequirement; rail: PaymentRail } | undefined {
+  const preference = policy.railPreference ?? [];
+  const candidates = requirements.flatMap((requirement) => {
+    const rail = rails.find((r) => r.supports(requirement.network));
+    return rail ? [{ requirement, rail }] : [];
+  });
+
+  const rank = (c: { requirement: PaymentRequirement; rail: PaymentRail }) => {
+    const pref = preference.indexOf(c.rail.name);
+    const rate = rates.rate(c.requirement.currency, policy.currency);
+    const cost = rate === undefined ? null : convert(parseAmount(c.requirement.amount), rate);
+    return { pref: pref === -1 ? Number.MAX_SAFE_INTEGER : pref, cost };
+  };
+
+  return candidates.sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra.pref !== rb.pref) return ra.pref - rb.pref;
+    if (ra.cost === null) return rb.cost === null ? 0 : 1;
+    if (rb.cost === null) return -1;
+    return ra.cost < rb.cost ? -1 : ra.cost > rb.cost ? 1 : 0;
+  })[0];
+}
+
+/**
+ * Normalize a 402 response body into PaymentRequirements. Accepts both this
  * gateway's simplified shape and the x402 wire shape ({ accepts: [...] } with
  * maxAmountRequired in 6-dp atomic units).
  */
-async function parseRequirement(res: Response, target: string): Promise<PaymentRequirement | undefined> {
+async function parseRequirements(res: Response, target: string): Promise<PaymentRequirement[]> {
   let body: unknown;
   try {
     body = await res.json();
   } catch {
-    return undefined;
+    return [];
   }
-  if (typeof body !== "object" || body === null) return undefined;
+  if (typeof body !== "object" || body === null) return [];
   const accepts = (body as { accepts?: unknown[] }).accepts;
-  const raw = (Array.isArray(accepts) ? accepts[0] : body) as Record<string, unknown> | undefined;
-  if (!raw || typeof raw.payTo !== "string") return undefined;
+  const rawList = Array.isArray(accepts) ? accepts : [body];
 
-  let amount: string | undefined;
-  let currency: string | undefined;
-  if (typeof raw.amount === "string") {
-    amount = raw.amount;
-    currency = typeof raw.currency === "string" ? raw.currency : undefined;
-  } else if (typeof raw.maxAmountRequired === "string") {
-    amount = formatAmount(BigInt(raw.maxAmountRequired));
-    currency = typeof raw.assetSymbol === "string" ? raw.assetSymbol : "USDC";
+  const out: PaymentRequirement[] = [];
+  for (const raw of rawList as Record<string, unknown>[]) {
+    if (!raw || typeof raw.payTo !== "string") continue;
+
+    let amount: string | undefined;
+    let currency: string | undefined;
+    if (typeof raw.amount === "string") {
+      amount = raw.amount;
+      currency = typeof raw.currency === "string" ? raw.currency : undefined;
+    } else if (typeof raw.maxAmountRequired === "string") {
+      amount = formatAmount(BigInt(raw.maxAmountRequired));
+      currency = typeof raw.assetSymbol === "string" ? raw.assetSymbol : "USDC";
+    }
+    if (!amount || !currency) continue;
+
+    out.push({
+      scheme: typeof raw.scheme === "string" ? raw.scheme : "exact",
+      network: typeof raw.network === "string" ? raw.network : "mock",
+      amount,
+      currency,
+      payTo: raw.payTo,
+      resource: typeof raw.resource === "string" ? raw.resource : target,
+      description: typeof raw.description === "string" ? raw.description : undefined,
+    });
   }
-  if (!amount || !currency) return undefined;
-
-  return {
-    scheme: typeof raw.scheme === "string" ? raw.scheme : "exact",
-    network: typeof raw.network === "string" ? raw.network : "mock",
-    amount,
-    currency,
-    payTo: raw.payTo,
-    resource: typeof raw.resource === "string" ? raw.resource : target,
-    description: typeof raw.description === "string" ? raw.description : undefined,
-  };
+  return out;
 }
 
 function headerValue(req: IncomingMessage, name: string): string | undefined {

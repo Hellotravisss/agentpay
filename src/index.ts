@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { PolicyConfig } from "./types.js";
 import { createGateway } from "./gateway/server.js";
+import { FixedRateProvider } from "./fx/rates.js";
 import { MockRail } from "./rails/mock.js";
 import { SpendLedger } from "./ledger/ledger.js";
 import { AuditLog } from "./audit/audit.js";
@@ -10,9 +11,11 @@ export * from "./money.js";
 export { evaluate, resolvePolicy } from "./policy/engine.js";
 export { SpendLedger, startOfUtcDay, startOfUtcMonth } from "./ledger/ledger.js";
 export { AuditLog } from "./audit/audit.js";
-export { createGateway, type Gateway, type GatewayOptions } from "./gateway/server.js";
-export { MockRail } from "./rails/mock.js";
+export { createGateway, route, type Gateway, type GatewayOptions } from "./gateway/server.js";
+export { FixedRateProvider, convert, type RateProvider } from "./fx/rates.js";
+export { MockRail, type MockRailOptions } from "./rails/mock.js";
 export { X402Rail, type X402RailConfig } from "./rails/x402.js";
+export { AlipayActRail, type AlipayActRailConfig } from "./rails/alipay.js";
 export type { PaymentRail } from "./rails/rail.js";
 
 /** CLI entrypoint: `npm run dev` starts a gateway with the example policy and the mock rail. */
@@ -24,7 +27,8 @@ if (isMain) {
 
   const { server } = createGateway({
     policyConfig,
-    rails: [new MockRail()],
+    rails: [new MockRail(), new MockRail({ name: "mock-alipay" })],
+    rates: new FixedRateProvider(policyConfig.fxRates ?? {}),
     ledger: new SpendLedger(process.env.LEDGER_FILE),
     audit: new AuditLog(process.env.AUDIT_FILE),
   });

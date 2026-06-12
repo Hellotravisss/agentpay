@@ -26,13 +26,18 @@ export class SpendLedger {
     }
   }
 
-  /** Total spent (micro-units) by an agent in a currency since `sinceMs`, up to `now`. */
+  /**
+   * Total spent (micro-units) by an agent in a base currency since `sinceMs`,
+   * up to `now`. Uses the receipt's converted base amount when present (set by
+   * the gateway at execution time), so spend across rails and currencies rolls
+   * up into one number.
+   */
   spentSince(agentId: string, currency: string, sinceMs: number, now: number): bigint {
     let total = 0n;
     for (const r of this.receipts) {
-      if (r.agentId === agentId && r.currency === currency && r.timestamp >= sinceMs && r.timestamp <= now) {
-        total += parseAmount(r.amount);
-      }
+      if (r.agentId !== agentId || r.timestamp < sinceMs || r.timestamp > now) continue;
+      if ((r.baseCurrency ?? r.currency) !== currency) continue;
+      total += parseAmount(r.baseAmount ?? r.amount);
     }
     return total;
   }

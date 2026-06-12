@@ -1,7 +1,11 @@
 {
+  "fxRates": {
+    "USDC:USD": "1",
+    "CNY:USD": "0.14"
+  },
   "defaults": {
     "enabled": true,
-    "currency": "USDC",
+    "currency": "USD",
     "perTransactionMax": "1.00",
     "dailyBudget": "10.00",
     "maxTransactionsPerDay": 200
@@ -10,7 +14,8 @@
     {
       "agentId": "research-bot",
       "enabled": true,
-      "currency": "USDC",
+      "currency": "USD",
+      "railPreference": ["mock-alipay", "mock"],
       "perTransactionMax": "0.25",
       "dailyBudget": "0.15",
       "monthlyBudget": "3.00",
@@ -19,7 +24,8 @@
     {
       "agentId": "ops-bot",
       "enabled": true,
-      "currency": "USDC",
+      "currency": "USD",
+      "railPreference": ["mock"],
       "payeeAllowlist": ["merchant-weather"],
       "dailyBudget": "5.00"
     }

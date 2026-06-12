@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentPolicy, PaymentContext, PaymentReceipt } from "../src/types.js";
 import { evaluate, resolvePolicy } from "../src/policy/engine.js";
+import { FixedRateProvider } from "../src/fx/rates.js";
 import { SpendLedger } from "../src/ledger/ledger.js";
 
 const T0 = Date.UTC(2026, 5, 12, 12, 0, 0); // 2026-06-12 noon UTC
@@ -37,9 +38,27 @@ describe("policy engine", () => {
     expect(d).toMatchObject({ allow: false, rule: "agent_disabled" });
   });
 
-  it("denies currency mismatches", () => {
+  it("denies payments with no conversion rate to the policy currency", () => {
     const d = evaluate(basePolicy, ctx({ currency: "EUR" }), new SpendLedger());
-    expect(d).toMatchObject({ allow: false, rule: "currency_mismatch" });
+    expect(d).toMatchObject({ allow: false, rule: "no_fx_rate" });
+  });
+
+  it("enforces limits across currencies via the rate provider", () => {
+    const rates = new FixedRateProvider({ "CNY:USDC": "0.14" });
+    const policy = { ...basePolicy, perTransactionMax: "0.05", dailyBudget: "0.10" };
+    // 0.36 CNY -> 0.0504 USDC: over the 0.05 per-tx max
+    expect(evaluate(policy, ctx({ currency: "CNY", amount: "0.36" }), new SpendLedger(), rates)).toMatchObject({
+      allow: false,
+      rule: "per_transaction_max",
+    });
+    // CNY spend already on the ledger (converted to base) counts against the USDC budget:
+    // 0.0504 spent + 0.355 CNY (0.0497) = 0.1001 > 0.10
+    const ledger = new SpendLedger();
+    ledger.record({ ...receipt("0.36", T0 - 1000), currency: "CNY", baseAmount: "0.0504", baseCurrency: "USDC" });
+    expect(evaluate(policy, ctx({ currency: "CNY", amount: "0.355" }), ledger, rates)).toMatchObject({
+      allow: false,
+      rule: "daily_budget",
+    });
   });
 
   it("enforces per-transaction max", () => {

@@ -1,6 +1,9 @@
 import type { AgentPolicy, PaymentContext, PolicyConfig, PolicyDecision } from "../types.js";
 import { formatAmount, parseAmount } from "../money.js";
+import { convert, FixedRateProvider, type RateProvider } from "../fx/rates.js";
 import { SpendLedger, startOfUtcDay, startOfUtcMonth } from "../ledger/ledger.js";
+
+const IDENTITY_RATES = new FixedRateProvider({});
 
 /** Resolve the effective policy for an agent: config defaults overlaid by the agent's entry. */
 export function resolvePolicy(config: PolicyConfig, agentId: string): AgentPolicy | undefined {
@@ -10,12 +13,22 @@ export function resolvePolicy(config: PolicyConfig, agentId: string): AgentPolic
 }
 
 /**
- * Decide whether one payment is allowed. Pure given (policy, ledger, ctx) —
- * no clock or IO access — so every decision is reproducible in tests and replays.
+ * Decide whether one payment is allowed. Pure given (policy, ledger, rates,
+ * ctx) — no clock or IO access — so every decision is reproducible in tests
+ * and replays.
+ *
+ * Limits are denominated in the policy's base currency; the payment amount
+ * is converted via `rates` first (rounding up), so one budget governs spend
+ * across every rail and currency.
  *
  * Rules are checked cheapest-first; the first violated rule wins.
  */
-export function evaluate(policy: AgentPolicy, ctx: PaymentContext, ledger: SpendLedger): PolicyDecision {
+export function evaluate(
+  policy: AgentPolicy,
+  ctx: PaymentContext,
+  ledger: SpendLedger,
+  rates: RateProvider = IDENTITY_RATES,
+): PolicyDecision {
   const { requirement: req } = ctx;
   const deny = (rule: string, reason: string): PolicyDecision => ({ allow: false, rule, reason });
 
@@ -23,14 +36,15 @@ export function evaluate(policy: AgentPolicy, ctx: PaymentContext, ledger: Spend
     return deny("agent_disabled", `Agent "${ctx.agentId}" is disabled`);
   }
 
-  if (req.currency !== policy.currency) {
+  const rate = rates.rate(req.currency, policy.currency);
+  if (rate === undefined) {
     return deny(
-      "currency_mismatch",
-      `Payment currency ${req.currency} does not match policy currency ${policy.currency}`,
+      "no_fx_rate",
+      `No conversion rate from ${req.currency} to policy currency ${policy.currency}`,
     );
   }
-
-  const amount = parseAmount(req.amount);
+  const amount = convert(parseAmount(req.amount), rate);
+  const inBase = (v: bigint) => `${formatAmount(v)} ${policy.currency}`;
 
   if (policy.payeeAllowlist && !policy.payeeAllowlist.includes(req.payTo)) {
     return deny("payee_not_allowlisted", `Payee ${req.payTo} is not on the allowlist`);
@@ -43,7 +57,7 @@ export function evaluate(policy: AgentPolicy, ctx: PaymentContext, ledger: Spend
   if (policy.perTransactionMax !== undefined && amount > parseAmount(policy.perTransactionMax)) {
     return deny(
       "per_transaction_max",
-      `Amount ${req.amount} ${req.currency} exceeds per-transaction max ${policy.perTransactionMax}`,
+      `Amount ${req.amount} ${req.currency} (${inBase(amount)}) exceeds per-transaction max ${policy.perTransactionMax}`,
     );
   }
 
@@ -65,7 +79,7 @@ export function evaluate(policy: AgentPolicy, ctx: PaymentContext, ledger: Spend
     if (spent + amount > budget) {
       return deny(
         "daily_budget",
-        `Payment of ${req.amount} would exceed daily budget ${policy.dailyBudget} (already spent ${formatAmount(spent)})`,
+        `Payment of ${inBase(amount)} would exceed daily budget ${policy.dailyBudget} (already spent ${formatAmount(spent)})`,
       );
     }
   }
@@ -76,7 +90,7 @@ export function evaluate(policy: AgentPolicy, ctx: PaymentContext, ledger: Spend
     if (spent + amount > budget) {
       return deny(
         "monthly_budget",
-        `Payment of ${req.amount} would exceed monthly budget ${policy.monthlyBudget} (already spent ${formatAmount(spent)})`,
+        `Payment of ${inBase(amount)} would exceed monthly budget ${policy.monthlyBudget} (already spent ${formatAmount(spent)})`,
       );
     }
   }
