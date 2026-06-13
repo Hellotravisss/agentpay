@@ -114,22 +114,43 @@ By default a valid Bearer key authenticates *and* `X-Agent-Id` still works (conv
 Rails implement one interface (`src/rails/rail.ts`): `supports(network)` + `pay(ctx) -> receipt`. Adding a rail never touches policy, FX, or routing code. Included:
 
 - **`MockRail`** — instant in-process settlement; instantiate several to simulate a multi-rail deployment.
-- **`X402Rail`** — adapter for [Coinbase's x402](https://www.x402.org/) protocol, with a **real client-side payment implementation**: `createEip3009Signer` produces signed EIP-3009 `transferWithAuthorization` payloads (the X-PAYMENT header) for USDC on Base / Base Sepolia. Signing is fully offline; the merchant's facilitator settles on-chain. Signatures are verified cryptographically in the test suite.
+- **`X402Rail`** — adapter for [Coinbase's x402](https://www.x402.org/) protocol, with a **real client-side payment implementation**: `createEip3009Signer` produces signed EIP-3009 `transferWithAuthorization` payloads (the X-PAYMENT header) for USDC on Base / Base Sepolia. Signing is fully offline; the merchant's facilitator settles on-chain. Verified two ways: signatures are checked cryptographically in the test suite, **and the rail has settled a real payment on Base Sepolia end to end** (see below).
 - **`AlipayActRail`** — adapter shaped for Alipay's agent-payment stack (AI付 under the ACT delegation model); bring your merchant integration via `executePayment`.
 
 Credentials live inside the rail callbacks you supply — the gateway core never touches keys. Planned: Google AP2.
 
 ### Buying a real x402 resource on Base Sepolia
 
+This has been run for real: the gateway settled **0.01 USDC on Base Sepolia** through Coinbase's hosted testnet facilitator from a wallet holding zero ETH (the facilitator pays gas — x402 is gasless for the payer). On-chain proof: [`0x3108b5…54ff9d`](https://sepolia.basescan.org/tx/0x3108b58475338d6dc2aa113642b39c0128bfcbd711bff2bdb06691b76154ff9d).
+
+To reproduce — public testnet endpoints come and go, so the reliable path is a local x402 merchant:
+
 ```bash
 # 1. fund a throwaway wallet with testnet USDC: https://faucet.circle.com (Base Sepolia)
-# 2. pick an x402-protected URL settling on base-sepolia
-X402_PRIVATE_KEY=0x... TARGET_URL=https://... npx tsx demo/x402-live.ts
+
+# 2. run a local x402 merchant settling on base-sepolia (official middleware + hosted facilitator)
+mkdir x402-merchant && cd x402-merchant && npm init -y && npm i x402-express express
+cat > server.mjs <<'JS'
+import express from "express";
+import { paymentMiddleware } from "x402-express";
+const app = express();
+app.use(paymentMiddleware("0xYourMerchantAddress", {       // any address — it just receives the USDC
+  "/premium": { price: "$0.01", network: "base-sepolia", config: { description: "x402 test" } },
+}));
+app.get("/premium", (_q, r) => r.json({ message: "unlocked by a real on-chain payment" }));
+app.listen(4021, () => console.log("merchant on http://localhost:4021/premium"));
+JS
+node server.mjs
+
+# 3. buy it through the gateway (signs EIP-3009 offline, facilitator settles on-chain)
+X402_PRIVATE_KEY=0x... TARGET_URL=http://localhost:4021/premium npx tsx demo/x402-live.ts
 ```
+
+Or point `TARGET_URL` at any live x402 resource that settles on `base-sepolia`.
 
 ## Status & roadmap
 
-This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit log, approvals, persistence, and 402 proxy flow are tested and working end to end against mock rails; the x402 client-side payment (EIP-3009 signing) is real and cryptographically verified in tests. Done since the first cut:
+This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit log, approvals, persistence, and 402 proxy flow are tested and working end to end against mock rails; the x402 rail has settled a real payment on Base Sepolia. Done since the first cut:
 
 - [x] Live FX rate provider with caching and staleness limits (`CachingRateProvider`)
 - [x] Persistent storage beyond JSONL — transactional SQLite via `node:sqlite`
@@ -137,8 +158,8 @@ This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit lo
 - [x] Web dashboard for spend + audit + approvals + policy editing (`GET /admin`)
 - [x] Policy hot-reload and an admin API for editing policies
 - [x] Multi-tenant API key management (hashed keys, mint/revoke, per-key expiry)
+- [x] End-to-end x402 settlement against a live facilitator — [0.01 USDC settled on Base Sepolia](https://sepolia.basescan.org/tx/0x3108b58475338d6dc2aa113642b39c0128bfcbd711bff2bdb06691b76154ff9d) (reproduce: [above](#buying-a-real-x402-resource-on-base-sepolia))
 
 Not yet built:
 
-- [ ] End-to-end x402 settlement against a live facilitator (needs a funded testnet wallet — see `demo/x402-live.ts`)
 - [ ] Real Alipay AI付/ACT settlement (requires merchant onboarding)
