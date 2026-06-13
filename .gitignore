@@ -1,4 +1,7 @@
 node_modules/
 dist/
 *.jsonl
+*.sqlite
+*.sqlite-journal
 .env
+.DS_Store

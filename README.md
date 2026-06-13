@@ -20,6 +20,8 @@ Agents never hold payment credentials. They call paid resources **through** the 
                        └────────────────────────────────────────────────┘      ─▶ ...
 ```
 
+For how it's built and *why* — design principles, the full 402 request lifecycle, and where the simple parts grow — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Quick start
 
 ```bash
