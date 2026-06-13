@@ -28,6 +28,15 @@
       "railPreference": ["mock"],
       "payeeAllowlist": ["merchant-weather"],
       "dailyBudget": "5.00"
+    },
+    {
+      "agentId": "finance-bot",
+      "enabled": true,
+      "currency": "USD",
+      "railPreference": ["mock"],
+      "perTransactionMax": "5.00",
+      "dailyBudget": "20.00",
+      "requireApprovalOver": "0.50"
     }
   ]
 }

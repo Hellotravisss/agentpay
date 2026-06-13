@@ -1,11 +1,17 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AgentPolicy, PaymentRequirement, PolicyConfig } from "../types.js";
+import type { AgentPolicy, ApprovalStatus, PaymentRequirement, PolicyConfig } from "../types.js";
 import type { PaymentRail } from "../rails/rail.js";
 import { SpendLedger, startOfUtcDay, startOfUtcMonth } from "../ledger/ledger.js";
 import { AuditLog } from "../audit/audit.js";
+import { ApprovalStore } from "../approvals/approvals.js";
 import { evaluate, resolvePolicy } from "../policy/engine.js";
 import { formatAmount, parseAmount } from "../money.js";
 import { convert, FixedRateProvider, type RateProvider } from "../fx/rates.js";
+
+/** A RateProvider that can asynchronously warm its cache (e.g. a live source). */
+function isRefreshable(r: RateProvider): r is RateProvider & { refresh(pairs: Array<[string, string]>): Promise<void> } {
+  return typeof (r as { refresh?: unknown }).refresh === "function";
+}
 
 export interface GatewayOptions {
   policyConfig: PolicyConfig;
@@ -14,6 +20,8 @@ export interface GatewayOptions {
   rates?: RateProvider;
   ledger?: SpendLedger;
   audit?: AuditLog;
+  /** Holds payments over an agent's approval threshold for human review. */
+  approvals?: ApprovalStore;
   /** Map of API key -> agentId. When set, agents must send `Authorization: Bearer <key>`. */
   apiKeys?: Record<string, string>;
   /** Injectable clock for tests. */
@@ -24,6 +32,7 @@ export interface Gateway {
   server: Server;
   ledger: SpendLedger;
   audit: AuditLog;
+  approvals: ApprovalStore;
 }
 
 /**
@@ -41,6 +50,7 @@ export interface Gateway {
 export function createGateway(options: GatewayOptions): Gateway {
   const ledger = options.ledger ?? new SpendLedger();
   const audit = options.audit ?? new AuditLog();
+  const approvals = options.approvals ?? new ApprovalStore(undefined, options.now);
   const rates = options.rates ?? new FixedRateProvider({});
   const now = options.now ?? Date.now;
 
@@ -65,6 +75,10 @@ export function createGateway(options: GatewayOptions): Gateway {
       const agent = url.searchParams.get("agent");
       const limit = Number(url.searchParams.get("limit") ?? 50);
       return sendJson(res, 200, { entries: agent ? audit.forAgent(agent, limit) : audit.tail(limit) });
+    }
+
+    if (url.pathname.startsWith("/admin/approvals")) {
+      return handleApprovals(req, res, url);
     }
 
     if (url.pathname === "/proxy") {
@@ -103,6 +117,46 @@ export function createGateway(options: GatewayOptions): Gateway {
     });
   }
 
+  async function handleApprovals(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    // GET /admin/approvals[?status=pending] — list held payments.
+    if (req.method === "GET" && url.pathname === "/admin/approvals") {
+      const status = url.searchParams.get("status") as ApprovalStatus | null;
+      return sendJson(res, 200, { approvals: approvals.list(status ?? undefined) });
+    }
+
+    // POST /admin/approvals/:id  { "decision": "approve" | "reject" }
+    const m = /^\/admin\/approvals\/([^/]+)$/.exec(url.pathname);
+    if (req.method === "POST" && m) {
+      const id = decodeURIComponent(m[1]!);
+      const existing = approvals.get(id);
+      if (!existing) return sendJson(res, 404, { error: "unknown_approval", id });
+
+      let decision: string | undefined;
+      try {
+        const raw = (await readBody(req)).toString() || "{}";
+        decision = (JSON.parse(raw) as { decision?: string }).decision;
+      } catch {
+        return sendJson(res, 400, { error: "bad_request", message: 'Body must be JSON { "decision": "approve" | "reject" }' });
+      }
+      if (decision !== "approve" && decision !== "reject") {
+        return sendJson(res, 400, { error: "bad_decision", message: 'decision must be "approve" or "reject"' });
+      }
+
+      const updated = approvals.decide(id, decision === "approve" ? "approved" : "rejected");
+      if (!updated) return sendJson(res, 409, { error: "already_decided", id, status: existing.status });
+
+      audit.log(
+        updated.status === "approved" ? "payment_approved" : "payment_rejected",
+        updated.agentId,
+        { approvalId: id, requirement: updated.requirement, baseAmount: updated.baseAmount },
+        now(),
+      );
+      return sendJson(res, 200, { approval: updated });
+    }
+
+    sendJson(res, 404, { error: "not_found" });
+  }
+
   async function handleProxy(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const agentId = resolveAgentId(req);
     if (!agentId) {
@@ -139,6 +193,12 @@ export function createGateway(options: GatewayOptions): Gateway {
       return sendJson(res, 403, { error: "policy_missing", message: `No spend policy configured for agent "${agentId}"` });
     }
 
+    // Warm a live rate cache (if any) before routing/evaluating, which read rates synchronously.
+    if (isRefreshable(rates)) {
+      const pairs = requirements.map((r) => [r.currency, policy.currency] as [string, string]);
+      await rates.refresh(pairs).catch(() => {}); // best-effort; stale/missing rates deny downstream
+    }
+
     const chosen = route(requirements, options.rails, policy, rates);
     if (!chosen) {
       return sendJson(res, 502, {
@@ -155,6 +215,33 @@ export function createGateway(options: GatewayOptions): Gateway {
       return sendJson(res, 403, { error: "payment_denied", rule: decision.rule, reason: decision.reason });
     }
 
+    // evaluate() already proved the rate exists; amount in the policy's base currency.
+    const rate = rates.rate(requirement.currency, policy.currency)!;
+    const baseAmount = convert(parseAmount(requirement.amount), rate);
+
+    // --- human-in-the-loop: hold payments at/over the approval threshold ---
+    if (policy.requireApprovalOver !== undefined && baseAmount >= parseAmount(policy.requireApprovalOver)) {
+      const held = approvals.findMatch(agentId, requirement);
+      if (!held) {
+        const a = approvals.create(agentId, requirement, formatAmount(baseAmount), policy.currency);
+        audit.log("payment_held", agentId, { requirement, rail: rail.name, approvalId: a.id, baseAmount: a.baseAmount }, timestamp);
+        return sendJson(res, 202, {
+          status: "held_for_approval",
+          approvalId: a.id,
+          reason: `Payment of ${a.baseAmount} ${policy.currency} requires approval (threshold ${policy.requireApprovalOver} ${policy.currency})`,
+        });
+      }
+      if (held.status === "pending") {
+        return sendJson(res, 202, { status: "awaiting_approval", approvalId: held.id });
+      }
+      if (held.status === "rejected") {
+        approvals.consume(held.id);
+        audit.log("payment_denied", agentId, { requirement, rail: rail.name, rule: "approval_rejected", approvalId: held.id }, timestamp);
+        return sendJson(res, 403, { error: "payment_denied", rule: "approval_rejected", reason: "A reviewer rejected this payment" });
+      }
+      approvals.consume(held.id); // approved → consume once and execute
+    }
+
     let receipt;
     try {
       receipt = await rail.pay(ctx);
@@ -163,9 +250,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       return sendJson(res, 502, { error: "payment_failed", message: String(err) });
     }
 
-    // evaluate() already proved the rate exists
-    const rate = rates.rate(requirement.currency, policy.currency)!;
-    receipt.baseAmount = formatAmount(convert(parseAmount(requirement.amount), rate));
+    receipt.baseAmount = formatAmount(baseAmount);
     receipt.baseCurrency = policy.currency;
 
     ledger.record(receipt);
@@ -190,7 +275,7 @@ export function createGateway(options: GatewayOptions): Gateway {
     return headerValue(req, "x-agent-id");
   }
 
-  return { server, ledger, audit };
+  return { server, ledger, audit, approvals };
 }
 
 /**

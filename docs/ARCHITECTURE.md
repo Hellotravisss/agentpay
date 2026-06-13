@@ -40,11 +40,20 @@ agent ──▶ /proxy?url=…                  src/gateway/server.ts
   3  parse the 402           parseRequirements()  collect EVERY accepted option
   4  resolve policy          resolvePolicy()    no entry → 403 policy_missing (audit)
   5  route to one rail       route()            railPreference, then cheapest in base ccy
+  ·  warm live FX (if any)   rates.refresh()    best-effort, before the sync rate() reads below
   6  check the policy        evaluate()         first violated rule wins → 403 (audit)
+  ·  hold over threshold     approvals          amount >= requireApprovalOver → 202 held (audit)
   7  execute on the rail     rail.pay(ctx)      failure → 502 payment_failed (audit)
   8  record + audit          ledger.record()    convert to base ccy, append receipt
   9  retry with proof        fetch(+X-PAYMENT)  return unlocked body + X-Gateway-* headers
 ```
+
+The hold step (`·` after policy) is the human-in-the-loop gate: when the
+base-currency amount meets the agent's `requireApprovalOver`, the request gets
+`202` + an `approvalId` instead of paying. An operator decides via
+`POST /admin/approvals/:id`; the agent's retry re-enters the lifecycle and, on a
+matching *approved* token, proceeds to step 7. The token is consumed once, and
+the budget check at step 6 runs again on the retry — approval never bypasses it.
 
 Every terminal branch that denies, fails, or executes writes to the audit log,
 so the trail explains *why* a request did or didn't move money — not just that
@@ -55,10 +64,13 @@ it failed.
 | Module | Responsibility | Key idea |
 |---|---|---|
 | [`money.ts`](../src/money.ts) | Decimal ⇄ `bigint` micro-units | One scale (1e6); parse/format are the only boundary where strings meet integers |
-| [`fx/rates.ts`](../src/fx/rates.ts) | Cross-currency conversion | Directional rates, round-up `convert()`; `RateProvider` is swappable for a live source |
+| [`fx/rates.ts`](../src/fx/rates.ts) | Cross-currency conversion | Directional rates, round-up `convert()`; `RateProvider` is the swappable seam |
+| [`fx/caching.ts`](../src/fx/caching.ts) | Live FX with caching | Async `refresh()` warms a cache that sync `rate()` serves; TTL + hard staleness limit |
 | [`policy/engine.ts`](../src/policy/engine.ts) | The allow/deny decision | Pure function; rules checked cheapest-first, first violation wins |
-| [`ledger/ledger.ts`](../src/ledger/ledger.ts) | Append-only spend record | Rolls every rail up into the base currency; UTC day/month windows; optional JSONL persistence |
-| [`audit/audit.ts`](../src/audit/audit.ts) | Append-only decision log | Records denials and failures, not just successes |
+| [`ledger/ledger.ts`](../src/ledger/ledger.ts) | Append-only spend record | Rolls every rail up into the base currency; UTC day/month windows |
+| [`audit/audit.ts`](../src/audit/audit.ts) | Append-only decision log | Records denials, failures, and holds — not just successes |
+| [`approvals/approvals.ts`](../src/approvals/approvals.ts) | Held-payment store | Human-in-the-loop gate; snapshot-append state so it persists over an append-only store |
+| [`store/store.ts`](../src/store/store.ts) | Persistence backends | One `RecordStore` interface; JSONL or transactional SQLite (`node:sqlite`) |
 | [`gateway/server.ts`](../src/gateway/server.ts) | The proxy + router + admin API | Orchestrates the lifecycle above; `route()` lives here |
 | [`rails/rail.ts`](../src/rails/rail.ts) | The rail interface | `supports(network)` + `pay(ctx)` — the only seam between core and money movement |
 
@@ -113,23 +125,37 @@ offline; the operator's facilitator settles it on-chain. The gateway needs no
 RPC connection — only the signing happens here, and the key stays in the
 callback.
 
-## What's deliberately simple (and where it would grow)
+## How the seams paid off
 
-This is an MVP; some choices trade durability for clarity, and the seams to
-upgrade them already exist:
+The four originally-deferred features all landed without touching the core,
+because each had a seam waiting for it:
 
-- **Storage is in-memory + optional JSONL.** The ledger and audit log replay
-  from append-only files on startup. Swapping in SQLite/Postgres is a matter of
-  reimplementing `SpendLedger`/`AuditLog` behind their current method shapes —
-  nothing else reads the storage directly.
-- **FX is a static table.** `FixedRateProvider` implements `RateProvider`; a
-  live provider with caching and staleness limits drops in at the same seam
-  without the policy engine knowing.
+- **Persistence** became one `RecordStore` interface
+  ([`store/store.ts`](../src/store/store.ts)) with a JSONL and a SQLite backend.
+  `SpendLedger`/`AuditLog`/`ApprovalStore` take an optional store and replay it
+  at construction; with no store they stay in-memory, so the in-memory query
+  engines never changed. The append-only `ApprovalStore` handles mutable status
+  by appending a fresh snapshot per change and reducing by id on load.
+- **Live FX** slotted behind the existing `RateProvider`.
+  [`CachingRateProvider`](../src/fx/caching.ts) keeps `rate()` synchronous (the
+  pure policy engine still can't await) by serving from a cache that the gateway
+  warms with an async `refresh()` before it routes. Past the staleness limit it
+  returns `undefined`, which the engine already treats as `no_fx_rate`.
+- **Human-in-the-loop** is a gate between the policy decision and execution —
+  exactly where no money has moved yet. It reuses the audit log and adds three
+  events (`payment_held`/`approved`/`rejected`).
+
+## What's still deliberately simple
+
 - **Budget windows are UTC calendar day/month.** Computed in
-  [`ledger.ts`](../src/ledger/ledger.ts) via `startOfUtcDay`/`startOfUtcMonth`,
-  not rolling windows — predictable and cheap, at the cost of a midnight reset.
-- **No human-in-the-loop yet.** Every approved payment executes immediately.
-  A "hold payments over $X" gate would sit between steps 6 and 7 of the
-  lifecycle, where the decision is already made but no money has moved.
+  [`ledger.ts`](../src/ledger/ledger.ts), not rolling windows — predictable and
+  cheap, at the cost of a midnight reset.
+- **Approval matching is by value, single-use.** A held payment is matched back
+  to its retry by (agent, payee, amount, currency, resource) and consumed once;
+  there's no reservation, so two large holds are each re-checked against the
+  budget at execution time rather than up front.
+- **SQLite stores a JSON blob per row.** Durable and externally queryable, but
+  the in-memory query engine still does the filtering; pushing budget queries
+  into SQL would matter only at a scale this MVP doesn't target.
 
-See the [roadmap](../README.md#status--roadmap) for the full list.
+See the [roadmap](../README.md#status--roadmap) for what's next.

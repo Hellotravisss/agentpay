@@ -82,6 +82,12 @@ export interface AgentPolicy {
   dailyBudget?: string;
   monthlyBudget?: string;
   maxTransactionsPerDay?: number;
+  /**
+   * Payments whose base-currency amount is >= this threshold are held for a
+   * human to approve via the admin API instead of executing immediately.
+   * Omit to auto-execute every policy-approved payment.
+   */
+  requireApprovalOver?: string;
   /** If present, only these payees may be paid (checked before blocklist). */
   payeeAllowlist?: string[];
   payeeBlocklist?: string[];
@@ -103,11 +109,35 @@ export type AuditEvent =
   | "payment_denied"
   | "payment_executed"
   | "payment_failed"
-  | "policy_missing";
+  | "policy_missing"
+  | "payment_held"
+  | "payment_approved"
+  | "payment_rejected";
 
 export interface AuditEntry {
   timestamp: number;
   event: AuditEvent;
   agentId: string;
   details: Record<string, unknown>;
+}
+
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+
+/**
+ * A policy-approved payment that exceeded the agent's approval threshold and
+ * is waiting on a human decision. Matched back to a retried request by
+ * (agentId, payTo, amount, currency, resource) and consumed once on execution.
+ */
+export interface PendingApproval {
+  id: string;
+  agentId: string;
+  requirement: PaymentRequirement;
+  /** Amount converted into the agent's policy currency, for the reviewer. */
+  baseAmount: string;
+  baseCurrency: string;
+  status: ApprovalStatus;
+  createdAt: number;
+  decidedAt?: number;
+  /** Set once the approved payment has been executed, so it can't be reused. */
+  consumedAt?: number;
 }

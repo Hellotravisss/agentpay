@@ -26,8 +26,8 @@ For how it's built and *why* — design principles, the full 402 request lifecyc
 
 ```bash
 npm install
-npm test        # 32 tests: money math, FX, policy rules, x402 signatures, cross-rail e2e
-npm run demo    # walkthrough: 2 rails, 2 currencies, 1 unified USD budget
+npm test        # 49 tests: money, FX (+ caching), policy, x402 sigs, persistence, approvals, e2e
+npm run demo    # walkthrough: 2 rails, 2 currencies, 1 unified USD budget, human-in-the-loop
 npm run dev     # start the gateway on :4020 with policies/example.json
 ```
 
@@ -51,6 +51,7 @@ Policies are deny-by-default: an agent with no policy entry cannot spend at all.
       "dailyBudget": "0.15",                    // UTC calendar day, across all rails/currencies
       "monthlyBudget": "3.00",                  // UTC calendar month
       "maxTransactionsPerDay": 200,
+      "requireApprovalOver": "0.50",            // hold payments >= this for human review (base ccy)
       "payeeBlocklist": ["merchant-shady"]
       // or "payeeAllowlist": [...] to whitelist instead
     }
@@ -66,10 +67,28 @@ All money is exact decimal (bigint micro-units, 6 dp — USDC precision); FX con
 |---|---|
 | `ANY /proxy?url=<target>` | Proxy a request; routes + pays on 402 if policy allows. Identify the agent via `Authorization: Bearer <api key>` (when keys are configured) or `X-Agent-Id`. |
 | `GET /admin/spend/:agentId` | Unified spend vs. limits in the base currency, plus a per-rail breakdown in native currencies. |
-| `GET /admin/audit?agent=&limit=` | Audit trail of every allow/deny/failure. |
+| `GET /admin/audit?agent=&limit=` | Audit trail of every allow/deny/failure/hold. |
+| `GET /admin/approvals?status=` | List payments held for human review (filter `pending`/`approved`/`rejected`). |
+| `POST /admin/approvals/:id` | Decide a held payment: body `{ "decision": "approve" \| "reject" }`. |
 | `GET /healthz` | Liveness. |
 
-Successful paid responses carry `X-Gateway-Payment-Id`, `X-Gateway-Rail`, and `X-Gateway-Payment-Amount` headers. Denials return `403` with the violated rule id (`per_transaction_max`, `daily_budget`, `payee_blocklisted`, `no_fx_rate`, ...) so the agent can explain itself or back off.
+Successful paid responses carry `X-Gateway-Payment-Id`, `X-Gateway-Rail`, and `X-Gateway-Payment-Amount` headers. Denials return `403` with the violated rule id (`per_transaction_max`, `daily_budget`, `payee_blocklisted`, `no_fx_rate`, `approval_rejected`, ...) so the agent can explain itself or back off.
+
+### Human-in-the-loop approvals
+
+Set `requireApprovalOver` on an agent and any policy-approved payment at or above that base-currency amount is **held** instead of executed: the proxy returns `202` with an `approvalId` rather than paying. An operator approves or rejects via `POST /admin/approvals/:id`; the agent's retry then executes (approved) or is denied with `approval_rejected`. Each approval is single-use, so it unlocks exactly one payment. Budgets are still re-checked at execution time on the retry.
+
+### Persistence
+
+By default the ledger, audit log, and approvals live in memory. Point any of them at a file to make state survive restarts — `.sqlite` selects a transactional SQLite backend (Node's built-in `node:sqlite`, no extra dependency), anything else is append-only JSONL:
+
+```bash
+LEDGER_FILE=./ledger.sqlite AUDIT_FILE=./audit.jsonl APPROVALS_FILE=./approvals.sqlite npm run dev
+```
+
+### Live FX rates
+
+`FixedRateProvider` is fine for static pairs; `CachingRateProvider` wraps any async rate source (a `RateFetcher`, default `httpRateFetcher` hits exchangerate.host) with a TTL and a hard staleness limit. Past that limit a cached rate is refused (`no_fx_rate`) rather than used — a payment is never priced on a stale rate. Stablecoin pegs can be `pinned` so they never expire or fetch.
 
 ## Payment rails
 
@@ -91,13 +110,16 @@ X402_PRIVATE_KEY=0x... TARGET_URL=https://... npx tsx demo/x402-live.ts
 
 ## Status & roadmap
 
-This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit log, and 402 proxy flow are tested and working end to end against mock rails; the x402 client-side payment (EIP-3009 signing) is real and cryptographically verified in tests. Not yet built:
+This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit log, approvals, persistence, and 402 proxy flow are tested and working end to end against mock rails; the x402 client-side payment (EIP-3009 signing) is real and cryptographically verified in tests. Done since the first cut:
+
+- [x] Live FX rate provider with caching and staleness limits (`CachingRateProvider`)
+- [x] Persistent storage beyond JSONL — transactional SQLite via `node:sqlite`
+- [x] Human-in-the-loop approvals ("hold payments over $X for review")
+
+Not yet built:
 
 - [ ] End-to-end x402 settlement against a live facilitator (needs a funded testnet wallet — see `demo/x402-live.ts`)
 - [ ] Real Alipay AI付/ACT settlement (requires merchant onboarding)
-- [ ] Live FX rate provider with caching and staleness limits
-- [ ] Persistent storage beyond JSONL (SQLite/Postgres)
-- [ ] Human-in-the-loop approvals ("hold payments over $X for review")
 - [ ] Web dashboard for spend + audit
 - [ ] Policy hot-reload and an admin API for editing policies
 - [ ] Multi-tenant API key management

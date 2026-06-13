@@ -1,18 +1,29 @@
 import { readFileSync } from "node:fs";
-import type { PolicyConfig } from "./types.js";
+import type { AuditEntry, PaymentReceipt, PendingApproval, PolicyConfig } from "./types.js";
 import { createGateway } from "./gateway/server.js";
 import { FixedRateProvider } from "./fx/rates.js";
 import { MockRail } from "./rails/mock.js";
 import { SpendLedger } from "./ledger/ledger.js";
 import { AuditLog } from "./audit/audit.js";
+import { ApprovalStore } from "./approvals/approvals.js";
+import { openStore } from "./store/store.js";
 
 export * from "./types.js";
 export * from "./money.js";
 export { evaluate, resolvePolicy } from "./policy/engine.js";
 export { SpendLedger, startOfUtcDay, startOfUtcMonth } from "./ledger/ledger.js";
 export { AuditLog } from "./audit/audit.js";
+export { ApprovalStore } from "./approvals/approvals.js";
 export { createGateway, route, type Gateway, type GatewayOptions } from "./gateway/server.js";
 export { FixedRateProvider, convert, type RateProvider } from "./fx/rates.js";
+export {
+  CachingRateProvider,
+  httpRateFetcher,
+  type RefreshableRateProvider,
+  type RateFetcher,
+  type CachingRateProviderOptions,
+} from "./fx/caching.js";
+export { JsonlStore, SqliteStore, openStore, type RecordStore } from "./store/store.js";
 export { MockRail, type MockRailOptions } from "./rails/mock.js";
 export { X402Rail, type X402RailConfig } from "./rails/x402.js";
 export {
@@ -39,11 +50,18 @@ if (isMain) {
     policyConfig,
     rails: [new MockRail(), new MockRail({ name: "mock-alipay" })],
     rates: new FixedRateProvider(policyConfig.fxRates ?? {}),
-    ledger: new SpendLedger(process.env.LEDGER_FILE),
-    audit: new AuditLog(process.env.AUDIT_FILE),
+    ledger: new SpendLedger(
+      process.env.LEDGER_FILE ? openStore<PaymentReceipt>(process.env.LEDGER_FILE, "receipts") : undefined,
+    ),
+    audit: new AuditLog(
+      process.env.AUDIT_FILE ? openStore<AuditEntry>(process.env.AUDIT_FILE, "audit") : undefined,
+    ),
+    approvals: new ApprovalStore(
+      process.env.APPROVALS_FILE ? openStore<PendingApproval>(process.env.APPROVALS_FILE, "approvals") : undefined,
+    ),
   });
   server.listen(port, () => {
-    console.log(`agent-pay-gateway listening on http://localhost:${port}`);
+    console.log(`agentpay listening on http://localhost:${port}`);
     console.log(`policy file: ${policyPath}`);
   });
 }

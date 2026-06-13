@@ -1,10 +1,11 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import type { PaymentReceipt } from "../types.js";
 import { parseAmount } from "../money.js";
+import type { RecordStore } from "../store/store.js";
 
 /**
  * Append-only spend ledger. Holds every executed payment in memory and
- * optionally persists each one as a JSONL line so budgets survive restarts.
+ * optionally mirrors each one to a persistence backend (JSONL or SQLite) so
+ * budgets survive restarts. With no store it is purely in-memory.
  *
  * Budget windows are computed in UTC: "daily" is the current UTC calendar day,
  * "monthly" is the current UTC calendar month.
@@ -12,18 +13,13 @@ import { parseAmount } from "../money.js";
 export class SpendLedger {
   private receipts: PaymentReceipt[] = [];
 
-  constructor(private readonly persistPath?: string) {
-    if (persistPath && existsSync(persistPath)) {
-      const lines = readFileSync(persistPath, "utf8").split("\n").filter(Boolean);
-      this.receipts = lines.map((l) => JSON.parse(l) as PaymentReceipt);
-    }
+  constructor(private readonly store?: RecordStore<PaymentReceipt>) {
+    if (store) this.receipts = store.all();
   }
 
   record(receipt: PaymentReceipt): void {
     this.receipts.push(receipt);
-    if (this.persistPath) {
-      appendFileSync(this.persistPath, JSON.stringify(receipt) + "\n");
-    }
+    this.store?.append(receipt);
   }
 
   /**

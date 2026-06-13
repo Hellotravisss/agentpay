@@ -32,6 +32,11 @@ const paidApi = createPaidApi([
     options: [{ network: "mock-alipay", amount: "0.07", currency: "CNY", payTo: "merchant-shady" }],
     body: { gossip: "you don't want this" },
   },
+  {
+    path: "/invoice",
+    options: [{ network: "mock", amount: "1.00", currency: "USDC", payTo: "merchant-weather" }],
+    body: { invoice: "PAID — receipt #4021" },
+  },
 ]);
 
 const policyConfig = JSON.parse(
@@ -66,6 +71,26 @@ async function callViaGateway(agentId: string, path: string): Promise<void> {
   }
 }
 
+/** Demonstrate the full hold → operator approves → retry executes loop. */
+async function holdApproveRetry(agentId: string, path: string): Promise<void> {
+  const url = (p: string) => `http://localhost:${GATEWAY_PORT}${p}`;
+  const target = encodeURIComponent(`http://localhost:${PAID_PORT}${path}`);
+  const call = () => fetch(url(`/proxy?url=${target}`), { headers: { "x-agent-id": agentId } });
+  const tag = `${c.bold(agentId.padEnd(13))} ${c.dim("GET")} ${path.padEnd(9)}`;
+
+  const held = await call();
+  const { approvalId, reason } = (await held.json()) as { approvalId: string; reason: string };
+  console.log(`  ${c.cyan("⏸")} ${tag} ${c.cyan(`${held.status} held`)}  ${c.dim(reason)}`);
+
+  await fetch(url(`/admin/approvals/${approvalId}`), { method: "POST", body: JSON.stringify({ decision: "approve" }) });
+  console.log(`    ${c.dim("operator")} ${c.green("✓ approved")} ${c.dim(approvalId.slice(0, 8) + "…")}`);
+
+  const paid = await call();
+  const note = paid.headers.get("x-gateway-payment-amount");
+  console.log(`  ${c.green("✓")} ${tag} ${c.green(String(paid.status))}  ${note ? c.green(`paid ${note}`) : ""}`);
+  console.log(`    ${c.dim(JSON.stringify(await paid.json()))}`);
+}
+
 async function main(): Promise<void> {
   await new Promise<void>((r) => paidApi.listen(PAID_PORT, r));
   await new Promise<void>((r) => gateway.server.listen(GATEWAY_PORT, r));
@@ -96,7 +121,10 @@ async function main(): Promise<void> {
   scene(5, "Deny by default", "no policy entry means no spend — nothing moves");
   await callViaGateway("rogue-bot", "/weather");
 
-  scene(6, "Unified spend dashboard", "GET /admin/spend/research-bot");
+  scene(6, "Human-in-the-loop", "finance-bot holds any payment over 0.50 USD for review");
+  await holdApproveRetry("finance-bot", "/invoice");
+
+  scene(7, "Unified spend dashboard", "GET /admin/spend/research-bot");
   const spend = (await (await fetch(`http://localhost:${GATEWAY_PORT}/admin/spend/research-bot`)).json()) as {
     currency: string;
     spentToday: string;
@@ -113,7 +141,7 @@ async function main(): Promise<void> {
     console.log(kv(`  via ${rail}`, native, `${info.transactions} tx`));
   }
 
-  scene(7, "Audit trail", "GET /admin/audit — every decision, denials included");
+  scene(8, "Audit trail", "GET /admin/audit — every decision, denials included");
   for (const e of gateway.audit.tail(20)) {
     const r = e.details.receipt as { amount: string; currency: string; payTo: string; rail: string } | undefined;
     const what = r

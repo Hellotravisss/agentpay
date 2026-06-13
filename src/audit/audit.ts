@@ -1,27 +1,23 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import type { AuditEntry, AuditEvent } from "../types.js";
+import type { RecordStore } from "../store/store.js";
 
 /**
  * Append-only audit trail of every payment decision the gateway makes —
  * denials included. This is the compliance artifact: "which agent paid whom,
- * how much, why was it allowed, and who got blocked".
+ * how much, why was it allowed, and who got blocked". Optionally mirrored to a
+ * persistence backend (JSONL or SQLite).
  */
 export class AuditLog {
   private entries: AuditEntry[] = [];
 
-  constructor(private readonly persistPath?: string) {
-    if (persistPath && existsSync(persistPath)) {
-      const lines = readFileSync(persistPath, "utf8").split("\n").filter(Boolean);
-      this.entries = lines.map((l) => JSON.parse(l) as AuditEntry);
-    }
+  constructor(private readonly store?: RecordStore<AuditEntry>) {
+    if (store) this.entries = store.all();
   }
 
   log(event: AuditEvent, agentId: string, details: Record<string, unknown>, timestamp = Date.now()): AuditEntry {
     const entry: AuditEntry = { timestamp, event, agentId, details };
     this.entries.push(entry);
-    if (this.persistPath) {
-      appendFileSync(this.persistPath, JSON.stringify(entry) + "\n");
-    }
+    this.store?.append(entry);
     return entry;
   }
 
