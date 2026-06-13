@@ -72,6 +72,7 @@ it failed.
 | [`approvals/approvals.ts`](../src/approvals/approvals.ts) | Held-payment store | Human-in-the-loop gate; snapshot-append state so it persists over an append-only store |
 | [`store/store.ts`](../src/store/store.ts) | Persistence backends | One `RecordStore` interface; JSONL or transactional SQLite (`node:sqlite`) |
 | [`gateway/server.ts`](../src/gateway/server.ts) | The proxy + router + admin API | Orchestrates the lifecycle above; `route()` lives here |
+| [`gateway/dashboard.html`](../src/gateway/dashboard.html) | Admin dashboard | One self-contained page served at `GET /admin`; reads the `/admin/*` JSON — a view, not a new data path |
 | [`rails/rail.ts`](../src/rails/rail.ts) | The rail interface | `supports(network)` + `pay(ctx)` — the only seam between core and money movement |
 
 ## Key design decisions

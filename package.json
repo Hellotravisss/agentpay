@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc",
+    "build": "tsc && cp src/gateway/dashboard.html dist/src/gateway/dashboard.html",
     "test": "vitest run",
     "demo": "tsx demo/run-demo.ts"
   },

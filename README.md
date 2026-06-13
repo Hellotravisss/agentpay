@@ -28,7 +28,7 @@ For how it's built and *why* — design principles, the full 402 request lifecyc
 npm install
 npm test        # 49 tests: money, FX (+ caching), policy, x402 sigs, persistence, approvals, e2e
 npm run demo    # walkthrough: 2 rails, 2 currencies, 1 unified USD budget, human-in-the-loop
-npm run dev     # start the gateway on :4020 with policies/example.json
+npm run dev     # start the gateway on :4020 (dashboard at http://localhost:4020/admin)
 ```
 
 The demo runs a merchant that accepts USDC (x402-style) **or** CNY (Alipay-style); two agents with different rail preferences get routed differently, and one USD budget governs both — a 0.36 CNY purchase consumes ~0.0504 USD of it. Per-transaction caps, payee blocklists, budget exhaustion, the per-rail spend breakdown, and the audit trail are all shown.
@@ -66,6 +66,8 @@ All money is exact decimal (bigint micro-units, 6 dp — USDC precision); FX con
 | Endpoint | Purpose |
 |---|---|
 | `ANY /proxy?url=<target>` | Proxy a request; routes + pays on 402 if policy allows. Identify the agent via `Authorization: Bearer <api key>` (when keys are configured) or `X-Agent-Id`. |
+| `GET /admin` | Web dashboard (single self-contained page) — live spend, pending approvals with approve/reject buttons, and the audit trail. |
+| `GET /admin/agents` | Configured agents with their resolved limits. |
 | `GET /admin/spend/:agentId` | Unified spend vs. limits in the base currency, plus a per-rail breakdown in native currencies. |
 | `GET /admin/audit?agent=&limit=` | Audit trail of every allow/deny/failure/hold. |
 | `GET /admin/approvals?status=` | List payments held for human review (filter `pending`/`approved`/`rejected`). |
@@ -115,11 +117,11 @@ This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit lo
 - [x] Live FX rate provider with caching and staleness limits (`CachingRateProvider`)
 - [x] Persistent storage beyond JSONL — transactional SQLite via `node:sqlite`
 - [x] Human-in-the-loop approvals ("hold payments over $X for review")
+- [x] Web dashboard for spend + audit + approvals (`GET /admin`)
 
 Not yet built:
 
 - [ ] End-to-end x402 settlement against a live facilitator (needs a funded testnet wallet — see `demo/x402-live.ts`)
 - [ ] Real Alipay AI付/ACT settlement (requires merchant onboarding)
-- [ ] Web dashboard for spend + audit
 - [ ] Policy hot-reload and an admin API for editing policies
 - [ ] Multi-tenant API key management

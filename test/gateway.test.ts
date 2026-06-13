@@ -130,4 +130,14 @@ describe("gateway end to end", () => {
     const res = await proxy("/nope", asBot);
     expect(res.status).toBe(404);
   });
+
+  it("serves the dashboard HTML and lists agents", async () => {
+    const page = await fetch(`${gatewayUrl}/admin`);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toMatch(/text\/html/);
+    expect(await page.text()).toContain("agentpay");
+
+    const agents = (await (await fetch(`${gatewayUrl}/admin/agents`)).json()) as { agents: Array<{ agentId: string }> };
+    expect(agents.agents.map((a) => a.agentId)).toEqual(["bot", "ops"]);
+  });
 });

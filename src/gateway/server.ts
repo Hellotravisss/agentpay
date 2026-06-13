@@ -4,6 +4,7 @@ import type { PaymentRail } from "../rails/rail.js";
 import { SpendLedger, startOfUtcDay, startOfUtcMonth } from "../ledger/ledger.js";
 import { AuditLog } from "../audit/audit.js";
 import { ApprovalStore } from "../approvals/approvals.js";
+import { dashboardHtml } from "./dashboard.js";
 import { evaluate, resolvePolicy } from "../policy/engine.js";
 import { formatAmount, parseAmount } from "../money.js";
 import { convert, FixedRateProvider, type RateProvider } from "../fx/rates.js";
@@ -65,6 +66,15 @@ export function createGateway(options: GatewayOptions): Gateway {
 
     if (url.pathname === "/healthz") {
       return sendJson(res, 200, { ok: true });
+    }
+
+    if (url.pathname === "/admin" || url.pathname === "/admin/") {
+      return sendHtml(res, dashboardHtml());
+    }
+
+    if (url.pathname === "/admin/agents") {
+      const agents = options.policyConfig.agents.map((a) => resolvePolicy(options.policyConfig, a.agentId)!);
+      return sendJson(res, 200, { agents });
     }
 
     if (url.pathname.startsWith("/admin/spend/")) {
@@ -396,4 +406,10 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;
   res.setHeader("content-type", "application/json");
   res.end(JSON.stringify(body));
+}
+
+function sendHtml(res: ServerResponse, html: string): void {
+  res.statusCode = 200;
+  res.setHeader("content-type", "text/html; charset=utf-8");
+  res.end(html);
 }
