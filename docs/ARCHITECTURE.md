@@ -67,6 +67,7 @@ it failed.
 | [`fx/rates.ts`](../src/fx/rates.ts) | Cross-currency conversion | Directional rates, round-up `convert()`; `RateProvider` is the swappable seam |
 | [`fx/caching.ts`](../src/fx/caching.ts) | Live FX with caching | Async `refresh()` warms a cache that sync `rate()` serves; TTL + hard staleness limit |
 | [`policy/engine.ts`](../src/policy/engine.ts) | The allow/deny decision | Pure function; rules checked cheapest-first, first violation wins |
+| [`policy/manager.ts`](../src/policy/manager.ts) | Live, editable policy | Owns the config so API edits + file hot-reload change behavior with no restart; validates untrusted edits |
 | [`ledger/ledger.ts`](../src/ledger/ledger.ts) | Append-only spend record | Rolls every rail up into the base currency; UTC day/month windows |
 | [`audit/audit.ts`](../src/audit/audit.ts) | Append-only decision log | Records denials, failures, and holds — not just successes |
 | [`approvals/approvals.ts`](../src/approvals/approvals.ts) | Held-payment store | Human-in-the-loop gate; snapshot-append state so it persists over an append-only store |
@@ -145,6 +146,12 @@ because each had a seam waiting for it:
 - **Human-in-the-loop** is a gate between the policy decision and execution —
   exactly where no money has moved yet. It reuses the audit log and adds three
   events (`payment_held`/`approved`/`rejected`).
+- **Editable policy + hot-reload** put a `PolicyManager` between the gateway and
+  the config it used to read directly. The admin API mutates it (and writes the
+  file back); a file watcher reloads out-of-band edits. The two don't fight:
+  `reload()` no-ops when the incoming file is byte-identical to the in-memory
+  state, so a write-back can't trigger its own reload. The decision engine stays
+  pure — the manager just decides *which* policy it sees.
 
 ## What's still deliberately simple
 

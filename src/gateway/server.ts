@@ -5,7 +5,8 @@ import { SpendLedger, startOfUtcDay, startOfUtcMonth } from "../ledger/ledger.js
 import { AuditLog } from "../audit/audit.js";
 import { ApprovalStore } from "../approvals/approvals.js";
 import { dashboardHtml } from "./dashboard.js";
-import { evaluate, resolvePolicy } from "../policy/engine.js";
+import { evaluate } from "../policy/engine.js";
+import { PolicyManager, validateAgentPolicy } from "../policy/manager.js";
 import { formatAmount, parseAmount } from "../money.js";
 import { convert, FixedRateProvider, type RateProvider } from "../fx/rates.js";
 
@@ -15,7 +16,10 @@ function isRefreshable(r: RateProvider): r is RateProvider & { refresh(pairs: Ar
 }
 
 export interface GatewayOptions {
-  policyConfig: PolicyConfig;
+  /** Static policy config. Wrapped in a PolicyManager; pass `policyManager` instead for hot-reload. */
+  policyConfig?: PolicyConfig;
+  /** Live, editable policy. Takes precedence over `policyConfig`. */
+  policyManager?: PolicyManager;
   rails: PaymentRail[];
   /** Currency conversion for cross-rail budgets. Defaults to identity-only. */
   rates?: RateProvider;
@@ -34,6 +38,7 @@ export interface Gateway {
   ledger: SpendLedger;
   audit: AuditLog;
   approvals: ApprovalStore;
+  policy: PolicyManager;
 }
 
 /**
@@ -54,6 +59,7 @@ export function createGateway(options: GatewayOptions): Gateway {
   const approvals = options.approvals ?? new ApprovalStore(undefined, options.now);
   const rates = options.rates ?? new FixedRateProvider({});
   const now = options.now ?? Date.now;
+  const policy = options.policyManager ?? new PolicyManager(options.policyConfig ?? { agents: [] });
 
   const server = createServer((req, res) => {
     handle(req, res).catch((err: unknown) => {
@@ -72,9 +78,12 @@ export function createGateway(options: GatewayOptions): Gateway {
       return sendHtml(res, dashboardHtml());
     }
 
-    if (url.pathname === "/admin/agents") {
-      const agents = options.policyConfig.agents.map((a) => resolvePolicy(options.policyConfig, a.agentId)!);
-      return sendJson(res, 200, { agents });
+    if (url.pathname === "/admin/policy") {
+      return sendJson(res, 200, policy.snapshot());
+    }
+
+    if (url.pathname === "/admin/agents" || url.pathname.startsWith("/admin/agents/")) {
+      return handleAgents(req, res, url);
     }
 
     if (url.pathname.startsWith("/admin/spend/")) {
@@ -98,9 +107,41 @@ export function createGateway(options: GatewayOptions): Gateway {
     sendJson(res, 404, { error: "not_found" });
   }
 
+  /** GET list · PUT /:id upsert · DELETE /:id remove — the policy admin API. */
+  async function handleAgents(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    if (req.method === "GET" && url.pathname === "/admin/agents") {
+      return sendJson(res, 200, { agents: policy.listResolved() });
+    }
+
+    const m = /^\/admin\/agents\/([^/]+)$/.exec(url.pathname);
+    if (!m) return sendJson(res, 404, { error: "not_found" });
+    const agentId = decodeURIComponent(m[1]!);
+
+    if (req.method === "PUT") {
+      let agent;
+      try {
+        const raw = (await readBody(req)).toString() || "{}";
+        agent = validateAgentPolicy(JSON.parse(raw), agentId);
+      } catch (err) {
+        return sendJson(res, 400, { error: "invalid_policy", message: String(err instanceof Error ? err.message : err) });
+      }
+      policy.upsertAgent(agent);
+      audit.log("policy_changed", agentId, { action: "upsert", agent }, now());
+      return sendJson(res, 200, { agent: policy.resolve(agentId) });
+    }
+
+    if (req.method === "DELETE") {
+      const removed = policy.removeAgent(agentId);
+      if (removed) audit.log("policy_changed", agentId, { action: "remove" }, now());
+      return sendJson(res, removed ? 200 : 404, { removed });
+    }
+
+    return sendJson(res, 405, { error: "method_not_allowed" });
+  }
+
   function handleSpend(res: ServerResponse, agentId: string): void {
-    const policy = resolvePolicy(options.policyConfig, agentId);
-    if (!policy) return sendJson(res, 404, { error: "unknown_agent", agentId });
+    const resolved = policy.resolve(agentId);
+    if (!resolved) return sendJson(res, 404, { error: "unknown_agent", agentId });
     const t = now();
 
     const perRail: Record<string, { transactions: number; amounts: Record<string, string> }> = {};
@@ -113,16 +154,17 @@ export function createGateway(options: GatewayOptions): Gateway {
 
     sendJson(res, 200, {
       agentId,
-      currency: policy.currency,
-      spentToday: formatAmount(ledger.spentSince(agentId, policy.currency, startOfUtcDay(t), t)),
-      spentThisMonth: formatAmount(ledger.spentSince(agentId, policy.currency, startOfUtcMonth(t), t)),
+      currency: resolved.currency,
+      spentToday: formatAmount(ledger.spentSince(agentId, resolved.currency, startOfUtcDay(t), t)),
+      spentThisMonth: formatAmount(ledger.spentSince(agentId, resolved.currency, startOfUtcMonth(t), t)),
       transactionsToday: ledger.transactionsSince(agentId, startOfUtcDay(t), t),
       perRail,
       limits: {
-        perTransactionMax: policy.perTransactionMax ?? null,
-        dailyBudget: policy.dailyBudget ?? null,
-        monthlyBudget: policy.monthlyBudget ?? null,
-        maxTransactionsPerDay: policy.maxTransactionsPerDay ?? null,
+        perTransactionMax: resolved.perTransactionMax ?? null,
+        dailyBudget: resolved.dailyBudget ?? null,
+        monthlyBudget: resolved.monthlyBudget ?? null,
+        maxTransactionsPerDay: resolved.maxTransactionsPerDay ?? null,
+        requireApprovalOver: resolved.requireApprovalOver ?? null,
       },
     });
   }
@@ -197,19 +239,19 @@ export function createGateway(options: GatewayOptions): Gateway {
     }
 
     const timestamp = now();
-    const policy = resolvePolicy(options.policyConfig, agentId);
-    if (!policy) {
+    const agentPolicy = policy.resolve(agentId);
+    if (!agentPolicy) {
       audit.log("policy_missing", agentId, { requirements }, timestamp);
       return sendJson(res, 403, { error: "policy_missing", message: `No spend policy configured for agent "${agentId}"` });
     }
 
     // Warm a live rate cache (if any) before routing/evaluating, which read rates synchronously.
     if (isRefreshable(rates)) {
-      const pairs = requirements.map((r) => [r.currency, policy.currency] as [string, string]);
+      const pairs = requirements.map((r) => [r.currency, agentPolicy.currency] as [string, string]);
       await rates.refresh(pairs).catch(() => {}); // best-effort; stale/missing rates deny downstream
     }
 
-    const chosen = route(requirements, options.rails, policy, rates);
+    const chosen = route(requirements, options.rails, agentPolicy, rates);
     if (!chosen) {
       return sendJson(res, 502, {
         error: "no_rail",
@@ -219,26 +261,26 @@ export function createGateway(options: GatewayOptions): Gateway {
     const { requirement, rail } = chosen;
     const ctx = { agentId, requirement, timestamp };
 
-    const decision = evaluate(policy, ctx, ledger, rates);
+    const decision = evaluate(agentPolicy, ctx, ledger, rates);
     if (!decision.allow) {
       audit.log("payment_denied", agentId, { requirement, rail: rail.name, rule: decision.rule, reason: decision.reason }, timestamp);
       return sendJson(res, 403, { error: "payment_denied", rule: decision.rule, reason: decision.reason });
     }
 
     // evaluate() already proved the rate exists; amount in the policy's base currency.
-    const rate = rates.rate(requirement.currency, policy.currency)!;
+    const rate = rates.rate(requirement.currency, agentPolicy.currency)!;
     const baseAmount = convert(parseAmount(requirement.amount), rate);
 
     // --- human-in-the-loop: hold payments at/over the approval threshold ---
-    if (policy.requireApprovalOver !== undefined && baseAmount >= parseAmount(policy.requireApprovalOver)) {
+    if (agentPolicy.requireApprovalOver !== undefined && baseAmount >= parseAmount(agentPolicy.requireApprovalOver)) {
       const held = approvals.findMatch(agentId, requirement);
       if (!held) {
-        const a = approvals.create(agentId, requirement, formatAmount(baseAmount), policy.currency);
+        const a = approvals.create(agentId, requirement, formatAmount(baseAmount), agentPolicy.currency);
         audit.log("payment_held", agentId, { requirement, rail: rail.name, approvalId: a.id, baseAmount: a.baseAmount }, timestamp);
         return sendJson(res, 202, {
           status: "held_for_approval",
           approvalId: a.id,
-          reason: `Payment of ${a.baseAmount} ${policy.currency} requires approval (threshold ${policy.requireApprovalOver} ${policy.currency})`,
+          reason: `Payment of ${a.baseAmount} ${agentPolicy.currency} requires approval (threshold ${agentPolicy.requireApprovalOver} ${agentPolicy.currency})`,
         });
       }
       if (held.status === "pending") {
@@ -261,7 +303,7 @@ export function createGateway(options: GatewayOptions): Gateway {
     }
 
     receipt.baseAmount = formatAmount(baseAmount);
-    receipt.baseCurrency = policy.currency;
+    receipt.baseCurrency = agentPolicy.currency;
 
     ledger.record(receipt);
     audit.log("payment_executed", agentId, { receipt }, timestamp);
@@ -285,7 +327,7 @@ export function createGateway(options: GatewayOptions): Gateway {
     return headerValue(req, "x-agent-id");
   }
 
-  return { server, ledger, audit, approvals };
+  return { server, ledger, audit, approvals, policy };
 }
 
 /**

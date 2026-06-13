@@ -66,8 +66,11 @@ All money is exact decimal (bigint micro-units, 6 dp — USDC precision); FX con
 | Endpoint | Purpose |
 |---|---|
 | `ANY /proxy?url=<target>` | Proxy a request; routes + pays on 402 if policy allows. Identify the agent via `Authorization: Bearer <api key>` (when keys are configured) or `X-Agent-Id`. |
-| `GET /admin` | Web dashboard (single self-contained page) — live spend, pending approvals with approve/reject buttons, and the audit trail. |
+| `GET /admin` | Web dashboard (single self-contained page) — live spend, pending approvals with approve/reject buttons, the audit trail, and inline policy editing. |
+| `GET /admin/policy` | The full live policy config. |
 | `GET /admin/agents` | Configured agents with their resolved limits. |
+| `PUT /admin/agents/:id` | Create or replace an agent's policy (validated). Takes effect on the next request; written back to the policy file. |
+| `DELETE /admin/agents/:id` | Remove an agent (reverts to deny-by-default). |
 | `GET /admin/spend/:agentId` | Unified spend vs. limits in the base currency, plus a per-rail breakdown in native currencies. |
 | `GET /admin/audit?agent=&limit=` | Audit trail of every allow/deny/failure/hold. |
 | `GET /admin/approvals?status=` | List payments held for human review (filter `pending`/`approved`/`rejected`). |
@@ -91,6 +94,13 @@ LEDGER_FILE=./ledger.sqlite AUDIT_FILE=./audit.jsonl APPROVALS_FILE=./approvals.
 ### Live FX rates
 
 `FixedRateProvider` is fine for static pairs; `CachingRateProvider` wraps any async rate source (a `RateFetcher`, default `httpRateFetcher` hits exchangerate.host) with a TTL and a hard staleness limit. Past that limit a cached rate is refused (`no_fx_rate`) rather than used — a payment is never priced on a stale rate. Stablecoin pegs can be `pinned` so they never expire or fetch.
+
+### Editing policies (live)
+
+Policies change at runtime — no restart. The `PolicyManager` owns the live config; every decision reads through it, so an edit takes effect on the next request. Two ways in, kept in sync:
+
+- **Admin API / dashboard** — `PUT`/`DELETE /admin/agents/:id` (the dashboard's edit pencils and "add agent" button drive these). Each edit is validated, audited as `policy_changed`, and written back to the policy file.
+- **The file itself** — `npm run dev` watches the policy file and hot-reloads out-of-band edits. The write-back and the watcher don't fight: `reload()` no-ops when the file is byte-identical to the in-memory state, so a self-write doesn't trigger a reload loop. (`fxRates` are built once at startup and not hot-reloaded.)
 
 ## Payment rails
 
@@ -117,11 +127,11 @@ This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit lo
 - [x] Live FX rate provider with caching and staleness limits (`CachingRateProvider`)
 - [x] Persistent storage beyond JSONL — transactional SQLite via `node:sqlite`
 - [x] Human-in-the-loop approvals ("hold payments over $X for review")
-- [x] Web dashboard for spend + audit + approvals (`GET /admin`)
+- [x] Web dashboard for spend + audit + approvals + policy editing (`GET /admin`)
+- [x] Policy hot-reload and an admin API for editing policies
 
 Not yet built:
 
 - [ ] End-to-end x402 settlement against a live facilitator (needs a funded testnet wallet — see `demo/x402-live.ts`)
 - [ ] Real Alipay AI付/ACT settlement (requires merchant onboarding)
-- [ ] Policy hot-reload and an admin API for editing policies
 - [ ] Multi-tenant API key management

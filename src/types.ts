@@ -112,7 +112,8 @@ export type AuditEvent =
   | "policy_missing"
   | "payment_held"
   | "payment_approved"
-  | "payment_rejected";
+  | "payment_rejected"
+  | "policy_changed";
 
 export interface AuditEntry {
   timestamp: number;
