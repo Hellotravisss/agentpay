@@ -1,4 +1,4 @@
-# agent-pay-gateway
+# agentpay
 
 A **cross-rail spend-policy gateway for AI agent payments**. It sits between your agents and anything that charges them money — x402-style paid APIs, Alipay-style agent payments, whatever comes next — and answers the question every company deploying paying agents will have to answer:
 
