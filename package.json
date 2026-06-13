@@ -1,6 +1,6 @@
 {
   "name": "agentpay",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Cross-rail spend-policy gateway for AI agent payments: unified multi-currency budgets, rail routing, per-transaction limits, payee allowlists, and full audit logging across agent payment rails (x402-style, Alipay-style).",
   "type": "module",
   "main": "dist/index.js",

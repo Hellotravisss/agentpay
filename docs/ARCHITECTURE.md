@@ -71,6 +71,7 @@ it failed.
 | [`ledger/ledger.ts`](../src/ledger/ledger.ts) | Append-only spend record | Rolls every rail up into the base currency; UTC day/month windows |
 | [`audit/audit.ts`](../src/audit/audit.ts) | Append-only decision log | Records denials, failures, and holds — not just successes |
 | [`approvals/approvals.ts`](../src/approvals/approvals.ts) | Held-payment store | Human-in-the-loop gate; snapshot-append state so it persists over an append-only store |
+| [`auth/keys.ts`](../src/auth/keys.ts) | Multi-tenant API keys | Maps a Bearer secret to an agent; stores only the SHA-256 hash, mint/expire/revoke |
 | [`store/store.ts`](../src/store/store.ts) | Persistence backends | One `RecordStore` interface; JSONL or transactional SQLite (`node:sqlite`) |
 | [`gateway/server.ts`](../src/gateway/server.ts) | The proxy + router + admin API | Orchestrates the lifecycle above; `route()` lives here |
 | [`gateway/dashboard.html`](../src/gateway/dashboard.html) | Admin dashboard | One self-contained page served at `GET /admin`; reads the `/admin/*` JSON — a view, not a new data path |

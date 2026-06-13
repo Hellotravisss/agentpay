@@ -160,6 +160,10 @@
     <div class="grid" id="agents"></div>
   </section>
   <section>
+    <div class="h"><h2>API keys</h2><span class="line"></span><button class="btn" onclick="openKeyForm()">＋ new key</button></div>
+    <div id="keys"></div>
+  </section>
+  <section>
     <div class="h"><h2>Pending approvals</h2><span class="line"></span></div>
     <div id="approvals"></div>
   </section>
@@ -199,6 +203,35 @@
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" onclick="saveAgent()">Save</button>
     </div>
+  </div>
+</div>
+
+<!-- create API key modal -->
+<div class="overlay" id="keyOverlay">
+  <div class="modal" style="width:min(460px,92vw)">
+    <div class="mhead"><h3>New API key</h3><button class="iconbtn x" onclick="closeKeyForm()" aria-label="close">✕</button></div>
+    <div class="body">
+      <div class="field"><label>label <span class="hint">(optional)</span></label><input type="text" id="k-label" placeholder="ci-pipeline" /></div>
+      <div class="field"><label>agent</label><select id="k-agent" style="width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:8px;padding:9px 11px;color:var(--text);font-family:var(--mono);font-size:13px"></select></div>
+      <div class="field"><label>expires in <span class="hint">(days, blank = never)</span></label><input type="text" id="k-expiry" placeholder="30" /></div>
+    </div>
+    <div class="err" id="k-err"></div>
+    <div class="mfoot"><span class="grow"></span><button class="btn" onclick="closeKeyForm()">Cancel</button><button class="btn primary" onclick="createKey()">Create</button></div>
+  </div>
+</div>
+
+<!-- reveal secret once -->
+<div class="overlay" id="revealOverlay">
+  <div class="modal" style="width:min(520px,92vw)">
+    <div class="mhead"><h3>Save this key now</h3></div>
+    <div class="body">
+      <p style="margin:0 0 12px;color:var(--dim);font-size:13px">It is shown only once — only its hash is stored. You won't be able to see it again.</p>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="reveal-secret" readonly style="flex:1;background:var(--bg2);border:1px solid var(--cyan);border-radius:8px;padding:10px 12px;color:var(--cyan);font-family:var(--mono);font-size:13px" />
+        <button class="btn" onclick="copyKey()">copy</button>
+      </div>
+    </div>
+    <div class="mfoot"><span class="grow"></span><button class="btn primary" onclick="closeReveal()">Done</button></div>
   </div>
 </div>
 
@@ -301,6 +334,50 @@ async function decide(id, decision) {
   refresh();
 }
 
+/* ── API keys ── */
+async function loadKeys() {
+  const { keys } = await getJSON("/admin/keys");
+  cache.keys = keys;
+  if (!keys.length) { $("keys").innerHTML = '<div class="tablewrap"><div class="empty">no API keys — agents authenticate via X-Agent-Id until you mint one</div></div>'; return; }
+  const rows = keys.map((k) => {
+    const expired = k.expiresAt && Date.now() >= k.expiresAt;
+    const status = k.revokedAt ? '<span class="pill rejected">revoked</span>' : expired ? '<span class="pill held">expired</span>' : '<span class="pill approved">active</span>';
+    const act = k.revokedAt ? "" : '<button class="btn reject" onclick="revokeKey(\'' + k.id + "','" + esc(k.label) + "')\">revoke</button>";
+    return "<tr><td>" + esc(k.label) + "</td><td>" + esc(k.agentId) + '</td><td class="mono">' + new Date(k.createdAt).toISOString().slice(0, 10) + "</td>"
+      + '<td class="mono">' + (k.lastUsedAt ? timeOf(k.lastUsedAt) : "—") + "</td><td>" + status + "</td><td>" + act + "</td></tr>";
+  }).join("");
+  $("keys").innerHTML = '<div class="tablewrap"><table><thead><tr><th>label</th><th>agent</th><th>created</th><th>last used</th><th>status</th><th></th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+}
+
+function openKeyForm() {
+  const sel = $("k-agent");
+  sel.innerHTML = (cache.agents || []).map((a) => '<option value="' + esc(a.agentId) + '">' + esc(a.agentId) + "</option>").join("");
+  $("k-label").value = ""; $("k-expiry").value = ""; $("k-err").textContent = "";
+  $("keyOverlay").classList.add("show");
+}
+function closeKeyForm() { $("keyOverlay").classList.remove("show"); }
+
+async function createKey() {
+  const agentId = $("k-agent").value;
+  if (!agentId) { $("k-err").textContent = "create an agent first"; return; }
+  const body = { agentId };
+  const label = $("k-label").value.trim(); if (label) body.label = label;
+  const days = parseInt($("k-expiry").value, 10); if (Number.isFinite(days) && days > 0) body.expiresAt = Date.now() + days * 86400000;
+  const res = await fetch("/admin/keys", { method: "POST", body: JSON.stringify(body) });
+  if (!res.ok) { const b = await res.json().catch(() => ({})); $("k-err").textContent = b.message || ("error " + res.status); return; }
+  const { secret } = await res.json();
+  closeKeyForm(); $("reveal-secret").value = secret; $("revealOverlay").classList.add("show");
+  toast("key created", "ok"); refresh();
+}
+function closeReveal() { $("revealOverlay").classList.remove("show"); $("reveal-secret").value = ""; }
+function copyKey() { navigator.clipboard?.writeText($("reveal-secret").value); toast("copied to clipboard", "ok"); }
+
+async function revokeKey(id, label) {
+  if (!confirm('Revoke key "' + label + '"? Callers using it stop authenticating immediately.')) return;
+  const res = await fetch("/admin/keys/" + id, { method: "DELETE" });
+  toast(res.ok ? "key revoked" : "revoke failed", res.ok ? "ok" : "bad"); refresh();
+}
+
 /* ── edit / add agent ── */
 let editing = null; // agentId being edited, or null when adding
 const FIELDS = ["agentId","currency","perTransactionMax","maxTransactionsPerDay","dailyBudget","monthlyBudget","requireApprovalOver","railPreference","payeeAllowlist","payeeBlocklist"];
@@ -346,19 +423,22 @@ async function deleteAgent() {
   closeModal(); toast(res.ok ? "removed " + editing : "delete failed", res.ok ? "ok" : "bad"); refresh();
 }
 
-$("overlay").addEventListener("click", (e) => { if (e.target === $("overlay")) closeModal(); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+const OVERLAYS = ["overlay", "keyOverlay", "revealOverlay"];
+const anyOverlayOpen = () => OVERLAYS.some((id) => $(id).classList.contains("show"));
+const closeAllOverlays = () => OVERLAYS.forEach((id) => $(id).classList.remove("show"));
+OVERLAYS.forEach((id) => $(id).addEventListener("click", (e) => { if (e.target === $(id)) $(id).classList.remove("show"); }));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAllOverlays(); });
 
 async function refresh() {
   try {
-    await Promise.all([loadAgents(), loadApprovals(), loadAudit()]);
+    await Promise.all([loadAgents(), loadKeys(), loadApprovals(), loadAudit()]);
     $("dot").className = "dot"; $("updated").textContent = "updated " + timeOf(Date.now()) + " UTC";
   } catch (err) {
     $("dot").className = "dot bad"; $("updated").textContent = "error: " + err.message;
   }
 }
 refresh();
-setInterval(() => { if (!$("overlay").classList.contains("show")) refresh(); }, 4000);
+setInterval(() => { if (!anyOverlayOpen()) refresh(); }, 4000);
 </script>
 </body>
 </html>

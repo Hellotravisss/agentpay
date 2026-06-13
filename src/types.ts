@@ -113,13 +113,32 @@ export type AuditEvent =
   | "payment_held"
   | "payment_approved"
   | "payment_rejected"
-  | "policy_changed";
+  | "policy_changed"
+  | "apikey_created"
+  | "apikey_revoked";
 
 export interface AuditEntry {
   timestamp: number;
   event: AuditEvent;
   agentId: string;
   details: Record<string, unknown>;
+}
+
+/**
+ * A multi-tenant API key. The raw secret is shown once at creation and never
+ * stored — only its hash lives server-side (see ApiKeyStore). A key maps a
+ * caller to one agentId; an agent can have several keys (rotation).
+ */
+export interface ApiKey {
+  id: string;
+  label: string;
+  agentId: string;
+  createdAt: number;
+  lastUsedAt?: number;
+  /** Epoch ms after which the key stops authenticating. Omit for no expiry. */
+  expiresAt?: number;
+  /** Set when revoked; a revoked key never authenticates again. */
+  revokedAt?: number;
 }
 
 export type ApprovalStatus = "pending" | "approved" | "rejected";

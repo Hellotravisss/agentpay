@@ -1,11 +1,12 @@
 import { readFileSync, watch, writeFileSync } from "node:fs";
-import type { AuditEntry, PaymentReceipt, PendingApproval, PolicyConfig } from "./types.js";
+import type { ApiKey, AuditEntry, PaymentReceipt, PendingApproval, PolicyConfig } from "./types.js";
 import { createGateway } from "./gateway/server.js";
 import { FixedRateProvider } from "./fx/rates.js";
 import { MockRail } from "./rails/mock.js";
 import { SpendLedger } from "./ledger/ledger.js";
 import { AuditLog } from "./audit/audit.js";
 import { ApprovalStore } from "./approvals/approvals.js";
+import { ApiKeyStore } from "./auth/keys.js";
 import { PolicyManager } from "./policy/manager.js";
 import { openStore } from "./store/store.js";
 
@@ -15,6 +16,7 @@ export { evaluate, resolvePolicy } from "./policy/engine.js";
 export { SpendLedger, startOfUtcDay, startOfUtcMonth } from "./ledger/ledger.js";
 export { AuditLog } from "./audit/audit.js";
 export { ApprovalStore } from "./approvals/approvals.js";
+export { ApiKeyStore } from "./auth/keys.js";
 export { PolicyManager, validateAgentPolicy } from "./policy/manager.js";
 export { createGateway, route, type Gateway, type GatewayOptions } from "./gateway/server.js";
 export { FixedRateProvider, convert, type RateProvider } from "./fx/rates.js";
@@ -68,6 +70,10 @@ if (isMain) {
     approvals: new ApprovalStore(
       process.env.APPROVALS_FILE ? openStore<PendingApproval>(process.env.APPROVALS_FILE, "approvals") : undefined,
     ),
+    apiKeyStore: new ApiKeyStore(
+      process.env.APIKEYS_FILE ? openStore<ApiKey>(process.env.APIKEYS_FILE, "apikeys") : undefined,
+    ),
+    requireApiKey: process.env.REQUIRE_API_KEY === "1",
   });
 
   // Hot-reload: pick up out-of-band edits to the policy file (debounced).

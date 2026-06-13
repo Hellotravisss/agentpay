@@ -71,6 +71,7 @@ All money is exact decimal (bigint micro-units, 6 dp — USDC precision); FX con
 | `GET /admin/agents` | Configured agents with their resolved limits. |
 | `PUT /admin/agents/:id` | Create or replace an agent's policy (validated). Takes effect on the next request; written back to the policy file. |
 | `DELETE /admin/agents/:id` | Remove an agent (reverts to deny-by-default). |
+| `GET /admin/keys` · `POST /admin/keys` · `DELETE /admin/keys/:id` | Multi-tenant API keys: list, mint (secret returned once), revoke. |
 | `GET /admin/spend/:agentId` | Unified spend vs. limits in the base currency, plus a per-rail breakdown in native currencies. |
 | `GET /admin/audit?agent=&limit=` | Audit trail of every allow/deny/failure/hold. |
 | `GET /admin/approvals?status=` | List payments held for human review (filter `pending`/`approved`/`rejected`). |
@@ -88,7 +89,7 @@ Set `requireApprovalOver` on an agent and any policy-approved payment at or abov
 By default the ledger, audit log, and approvals live in memory. Point any of them at a file to make state survive restarts — `.sqlite` selects a transactional SQLite backend (Node's built-in `node:sqlite`, no extra dependency), anything else is append-only JSONL:
 
 ```bash
-LEDGER_FILE=./ledger.sqlite AUDIT_FILE=./audit.jsonl APPROVALS_FILE=./approvals.sqlite npm run dev
+LEDGER_FILE=./ledger.sqlite AUDIT_FILE=./audit.jsonl APPROVALS_FILE=./approvals.sqlite APIKEYS_FILE=./keys.sqlite npm run dev
 ```
 
 ### Live FX rates
@@ -101,6 +102,12 @@ Policies change at runtime — no restart. The `PolicyManager` owns the live con
 
 - **Admin API / dashboard** — `PUT`/`DELETE /admin/agents/:id` (the dashboard's edit pencils and "add agent" button drive these). Each edit is validated, audited as `policy_changed`, and written back to the policy file.
 - **The file itself** — `npm run dev` watches the policy file and hot-reloads out-of-band edits. The write-back and the watcher don't fight: `reload()` no-ops when the file is byte-identical to the in-memory state, so a self-write doesn't trigger a reload loop. (`fxRates` are built once at startup and not hot-reloaded.)
+
+### Multi-tenant API keys
+
+Agents authenticate with `Authorization: Bearer <key>`. Keys are minted per agent (an agent can hold several, for rotation) via `POST /admin/keys` or the dashboard — the **raw secret is returned exactly once**; only its SHA-256 hash is stored, so a leaked store yields no usable credentials. Keys support an optional expiry and can be revoked instantly (`DELETE /admin/keys/:id`); both are audited (`apikey_created` / `apikey_revoked`).
+
+By default a valid Bearer key authenticates *and* `X-Agent-Id` still works (convenient for local dev). Set `REQUIRE_API_KEY=1` (or `requireApiKey: true`) to reject `X-Agent-Id` so only a valid key authenticates. Persist keys across restarts with `APIKEYS_FILE=./keys.sqlite`.
 
 ## Payment rails
 
@@ -129,9 +136,9 @@ This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit lo
 - [x] Human-in-the-loop approvals ("hold payments over $X for review")
 - [x] Web dashboard for spend + audit + approvals + policy editing (`GET /admin`)
 - [x] Policy hot-reload and an admin API for editing policies
+- [x] Multi-tenant API key management (hashed keys, mint/revoke, per-key expiry)
 
 Not yet built:
 
 - [ ] End-to-end x402 settlement against a live facilitator (needs a funded testnet wallet — see `demo/x402-live.ts`)
 - [ ] Real Alipay AI付/ACT settlement (requires merchant onboarding)
-- [ ] Multi-tenant API key management

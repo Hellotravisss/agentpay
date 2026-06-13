@@ -4,6 +4,7 @@ import type { PaymentRail } from "../rails/rail.js";
 import { SpendLedger, startOfUtcDay, startOfUtcMonth } from "../ledger/ledger.js";
 import { AuditLog } from "../audit/audit.js";
 import { ApprovalStore } from "../approvals/approvals.js";
+import { ApiKeyStore } from "../auth/keys.js";
 import { dashboardHtml } from "./dashboard.js";
 import { evaluate } from "../policy/engine.js";
 import { PolicyManager, validateAgentPolicy } from "../policy/manager.js";
@@ -27,8 +28,12 @@ export interface GatewayOptions {
   audit?: AuditLog;
   /** Holds payments over an agent's approval threshold for human review. */
   approvals?: ApprovalStore;
-  /** Map of API key -> agentId. When set, agents must send `Authorization: Bearer <key>`. */
+  /** Legacy static map of API key -> agentId. When set, agents must send `Authorization: Bearer <key>`. */
   apiKeys?: Record<string, string>;
+  /** Multi-tenant API key store (mint/revoke via /admin/keys). Verified keys always authenticate. */
+  apiKeyStore?: ApiKeyStore;
+  /** When true, reject `X-Agent-Id` — only a valid Bearer API key authenticates. */
+  requireApiKey?: boolean;
   /** Injectable clock for tests. */
   now?: () => number;
 }
@@ -39,6 +44,7 @@ export interface Gateway {
   audit: AuditLog;
   approvals: ApprovalStore;
   policy: PolicyManager;
+  keys: ApiKeyStore;
 }
 
 /**
@@ -60,6 +66,7 @@ export function createGateway(options: GatewayOptions): Gateway {
   const rates = options.rates ?? new FixedRateProvider({});
   const now = options.now ?? Date.now;
   const policy = options.policyManager ?? new PolicyManager(options.policyConfig ?? { agents: [] });
+  const keys = options.apiKeyStore ?? new ApiKeyStore(undefined, options.now);
 
   const server = createServer((req, res) => {
     handle(req, res).catch((err: unknown) => {
@@ -100,6 +107,10 @@ export function createGateway(options: GatewayOptions): Gateway {
       return handleApprovals(req, res, url);
     }
 
+    if (url.pathname === "/admin/keys" || url.pathname.startsWith("/admin/keys/")) {
+      return handleKeys(req, res, url);
+    }
+
     if (url.pathname === "/proxy") {
       return handleProxy(req, res, url);
     }
@@ -134,6 +145,44 @@ export function createGateway(options: GatewayOptions): Gateway {
       const removed = policy.removeAgent(agentId);
       if (removed) audit.log("policy_changed", agentId, { action: "remove" }, now());
       return sendJson(res, removed ? 200 : 404, { removed });
+    }
+
+    return sendJson(res, 405, { error: "method_not_allowed" });
+  }
+
+  /** GET list · POST mint (secret shown once) · DELETE /:id revoke — multi-tenant API keys. */
+  async function handleKeys(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    if (req.method === "GET" && url.pathname === "/admin/keys") {
+      return sendJson(res, 200, { keys: keys.list() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/admin/keys") {
+      let body: { label?: unknown; agentId?: unknown; expiresAt?: unknown };
+      try {
+        body = JSON.parse((await readBody(req)).toString() || "{}");
+      } catch {
+        return sendJson(res, 400, { error: "bad_request", message: "Body must be JSON" });
+      }
+      if (typeof body.agentId !== "string" || !body.agentId) {
+        return sendJson(res, 400, { error: "bad_request", message: "agentId is required" });
+      }
+      if (!policy.resolve(body.agentId)) {
+        return sendJson(res, 400, { error: "unknown_agent", message: `No policy configured for agent "${body.agentId}"` });
+      }
+      const label = typeof body.label === "string" && body.label ? body.label : body.agentId;
+      const expiresAt = typeof body.expiresAt === "number" ? body.expiresAt : undefined;
+      const created = keys.create(label, body.agentId, { expiresAt });
+      audit.log("apikey_created", body.agentId, { keyId: created.apiKey.id, label }, now());
+      return sendJson(res, 201, created); // { apiKey, secret } — secret is returned only here
+    }
+
+    const m = /^\/admin\/keys\/([^/]+)$/.exec(url.pathname);
+    if (req.method === "DELETE" && m) {
+      const id = decodeURIComponent(m[1]!);
+      const existing = keys.get(id);
+      const revoked = keys.revoke(id);
+      if (revoked && existing) audit.log("apikey_revoked", existing.agentId, { keyId: id, label: existing.label }, now());
+      return sendJson(res, revoked ? 200 : 404, { revoked });
     }
 
     return sendJson(res, 405, { error: "method_not_allowed" });
@@ -319,15 +368,18 @@ export function createGateway(options: GatewayOptions): Gateway {
   }
 
   function resolveAgentId(req: IncomingMessage): string | undefined {
-    const auth = headerValue(req, "authorization");
-    if (options.apiKeys) {
-      const key = auth?.replace(/^Bearer\s+/i, "");
-      return key ? options.apiKeys[key] : undefined;
+    const token = headerValue(req, "authorization")?.replace(/^Bearer\s+/i, "").trim();
+    if (token) {
+      const viaStore = keys.verify(token);
+      if (viaStore) return viaStore;
+      if (options.apiKeys?.[token]) return options.apiKeys[token];
     }
+    // A configured legacy map, or requireApiKey, means Bearer is mandatory — no X-Agent-Id fallback.
+    if (options.requireApiKey || options.apiKeys) return undefined;
     return headerValue(req, "x-agent-id");
   }
 
-  return { server, ledger, audit, approvals, policy };
+  return { server, ledger, audit, approvals, policy, keys };
 }
 
 /**
