@@ -1,6 +1,6 @@
 # agentpay
 
-A **cross-rail spend-policy gateway for AI agent payments**. It sits between your agents and anything that charges them money — x402-style paid APIs, Alipay-style agent payments, whatever comes next — and answers the question every company deploying paying agents will have to answer:
+A **cross-rail spend-policy gateway for AI agent payments**. It sits between your agents and anything that charges them money — x402-style paid APIs, Alipay/WeChat-style agent payments, whatever comes next — and answers the question every company deploying paying agents will have to answer:
 
 > *"How do I let my agent spend money — across several payment rails — without giving it my wallets?"*
 
@@ -21,6 +21,14 @@ Agents never hold payment credentials. They call paid resources **through** the 
 ```
 
 For how it's built and *why* — design principles, the full 402 request lifecycle, and where the simple parts grow — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Where it fits — the neutral layer
+
+The platforms are racing to let agents spend, and each is building a **closed loop**: Alipay's [ACT](https://www.qbitai.com/2026/01/369878.html) delegated-payment protocol, WeChat Pay's [isolated "AI card"](https://www.caixinglobal.com/2026-06-17/tencent-lets-ai-agent-make-purchases-through-wechat-pay-102455141.html) with user-set authorization scope and spend limits, x402 for crypto-native APIs. Every platform wants agents spending inside *its* wallet, on *its* rail — and the design they keep converging on (a wallet isolated from your real account, scoped authorization, per-spend limits, big payments held for confirmation, a full audit trail) is exactly the control surface this project is built around. The thesis is no longer speculative; it's where the giants are pointing their capex.
+
+But a company running real agents doesn't get to live in one loop. Its agents pay an x402 API in USDC, a vendor in CNY, the next thing in whatever ships next quarter — and **no single platform gives it one neutral view across all of them**: one base-currency budget, one audit trail, one policy, one place where the agent never holds a credential. The more these closed loops fragment, the more that spanning layer is missing.
+
+That layer is agentpay. It sits *above* the rails — x402, Alipay, WeChat, mock — behind a two-method interface ([`rails/rail.ts`](src/rails/rail.ts)), so budget, policy, FX, routing, and audit are written **once** and every rail plugs in underneath. It's rail-neutral and self-hosted by design: the value is precisely the part no platform racing to own its own loop will build for you.
 
 ## Quick start
 
