@@ -55,6 +55,7 @@ beforeAll(async () => {
     rails: [new MockRail(), new MockRail({ name: "mock-alipay" })],
     rates: new FixedRateProvider({ "USDC:USD": "1", "CNY:USD": "0.14" }),
     apiKeys: { "secret-key": "bot", "ops-key": "ops" },
+    allowPrivateTargets: true,
   });
   gatewayUrl = await listen(gateway.server);
 });

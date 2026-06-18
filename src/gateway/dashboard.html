@@ -244,7 +244,31 @@ const num = (s) => { const n = parseFloat(s); return Number.isFinite(n) ? n : 0;
 const timeOf = (ms) => new Date(ms).toISOString().slice(11, 19);
 const startOfUtcDay = (ms) => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
 
-async function getJSON(url) { const r = await fetch(url); if (!r.ok) throw new Error(url + " → " + r.status); return r.json(); }
+// Admin token (used only when the gateway runs with ADMIN_TOKEN). Seed it from
+// the URL (#token=… or ?token=…) once, then keep it in localStorage.
+let ADMIN_TOKEN = localStorage.getItem("agentpay_admin_token") || "";
+(function seedToken() {
+  const m = (location.hash + "&" + location.search).match(/token=([^&]+)/);
+  if (m) { ADMIN_TOKEN = decodeURIComponent(m[1]); localStorage.setItem("agentpay_admin_token", ADMIN_TOKEN); history.replaceState(null, "", location.pathname); }
+})();
+
+function authInit(opts = {}) {
+  const headers = Object.assign({}, opts.headers);
+  if (ADMIN_TOKEN) headers["Authorization"] = "Bearer " + ADMIN_TOKEN;
+  return Object.assign({}, opts, { headers });
+}
+
+// Fetch wrapper: attaches the admin token and, on 401, prompts for it once and retries.
+async function api(url, opts) {
+  let r = await fetch(url, authInit(opts));
+  if (r.status === 401) {
+    const t = prompt("Admin token required:");
+    if (t) { ADMIN_TOKEN = t; localStorage.setItem("agentpay_admin_token", t); r = await fetch(url, authInit(opts)); }
+  }
+  return r;
+}
+
+async function getJSON(url) { const r = await api(url); if (!r.ok) throw new Error(url + " → " + r.status); return r.json(); }
 
 function toast(msg, kind) {
   const t = $("toast"); t.textContent = msg; t.className = "show " + (kind || "");
@@ -329,7 +353,7 @@ async function loadAudit() {
 }
 
 async function decide(id, decision) {
-  try { await fetch("/admin/approvals/" + id, { method: "POST", body: JSON.stringify({ decision }) }); toast("approval " + decision + "d", "ok"); }
+  try { await api("/admin/approvals/" + id, { method: "POST", body: JSON.stringify({ decision }) }); toast("approval " + decision + "d", "ok"); }
   catch (e) { toast("failed: " + e.message, "bad"); }
   refresh();
 }
@@ -363,7 +387,7 @@ async function createKey() {
   const body = { agentId };
   const label = $("k-label").value.trim(); if (label) body.label = label;
   const days = parseInt($("k-expiry").value, 10); if (Number.isFinite(days) && days > 0) body.expiresAt = Date.now() + days * 86400000;
-  const res = await fetch("/admin/keys", { method: "POST", body: JSON.stringify(body) });
+  const res = await api("/admin/keys", { method: "POST", body: JSON.stringify(body) });
   if (!res.ok) { const b = await res.json().catch(() => ({})); $("k-err").textContent = b.message || ("error " + res.status); return; }
   const { secret } = await res.json();
   closeKeyForm(); $("reveal-secret").value = secret; $("revealOverlay").classList.add("show");
@@ -374,7 +398,7 @@ function copyKey() { navigator.clipboard?.writeText($("reveal-secret").value); t
 
 async function revokeKey(id, label) {
   if (!confirm('Revoke key "' + label + '"? Callers using it stop authenticating immediately.')) return;
-  const res = await fetch("/admin/keys/" + id, { method: "DELETE" });
+  const res = await api("/admin/keys/" + id, { method: "DELETE" });
   toast(res.ok ? "key revoked" : "revoke failed", res.ok ? "ok" : "bad"); refresh();
 }
 
@@ -412,14 +436,14 @@ function buildPolicy() {
 async function saveAgent() {
   const p = buildPolicy();
   if (!p.agentId) { $("m-err").textContent = "agent id is required"; return; }
-  const res = await fetch("/admin/agents/" + encodeURIComponent(p.agentId), { method: "PUT", body: JSON.stringify(p) });
+  const res = await api("/admin/agents/" + encodeURIComponent(p.agentId), { method: "PUT", body: JSON.stringify(p) });
   if (!res.ok) { const b = await res.json().catch(() => ({})); $("m-err").textContent = b.message || ("error " + res.status); return; }
   closeModal(); toast("saved " + p.agentId, "ok"); refresh();
 }
 
 async function deleteAgent() {
   if (!editing || !confirm("Remove agent \"" + editing + "\"? It reverts to deny-by-default.")) return;
-  const res = await fetch("/admin/agents/" + encodeURIComponent(editing), { method: "DELETE" });
+  const res = await api("/admin/agents/" + encodeURIComponent(editing), { method: "DELETE" });
   closeModal(); toast(res.ok ? "removed " + editing : "delete failed", res.ok ? "ok" : "bad"); refresh();
 }
 

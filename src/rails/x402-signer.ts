@@ -56,6 +56,16 @@ export interface X402PaymentPayload {
 export interface Eip3009SignerOptions {
   /** Hex private key of the agent treasury wallet (fund it with testnet USDC for Base Sepolia). */
   privateKey: Hex;
+  /**
+   * Asset contracts the signer is willing to sign for, per network. Defaults to
+   * canonical USDC only. This is the SSRF-equivalent guard for signing: without
+   * it, a malicious 402 could name an arbitrary (more valuable) token as the
+   * asset and trick the wallet into authorizing a transfer of it. A merchant
+   * asset that isn't on this list is refused.
+   */
+  allowedAssets?: Record<string, Hex[]>;
+  /** Hard cap (seconds) on how long a signed authorization stays valid, regardless of what the 402 asks. */
+  maxAuthorizationSeconds?: number;
   /** Injectable clock for tests. */
   now?: () => number;
 }
@@ -68,6 +78,11 @@ export interface Eip3009SignerOptions {
 export function createEip3009Signer(options: Eip3009SignerOptions) {
   const account = privateKeyToAccount(options.privateKey);
   const now = options.now ?? Date.now;
+  const allowedAssets = options.allowedAssets ?? {
+    base: [DEFAULT_USDC.base!],
+    "base-sepolia": [DEFAULT_USDC["base-sepolia"]!],
+  };
+  const maxAuthSeconds = options.maxAuthorizationSeconds ?? 600;
 
   return async (ctx: PaymentContext): Promise<string> => {
     const { requirement: req } = ctx;
@@ -75,18 +90,24 @@ export function createEip3009Signer(options: Eip3009SignerOptions) {
     if (chainId === undefined) {
       throw new Error(`Unknown x402 network "${req.network}"`);
     }
-    const asset = (req.asset as Hex | undefined) ?? DEFAULT_USDC[req.network];
-    if (!asset) {
-      throw new Error(`No asset address in requirement and no default USDC for "${req.network}"`);
+    const allowed = allowedAssets[req.network];
+    if (!allowed || allowed.length === 0) {
+      throw new Error(`No allowlisted asset for network "${req.network}"`);
+    }
+    const asset = (req.asset as Hex | undefined) ?? allowed[0]!;
+    if (!allowed.some((a) => a.toLowerCase() === asset.toLowerCase())) {
+      // Refuse to sign a transfer of a token the operator hasn't allowlisted.
+      throw new Error(`Refusing to sign: asset ${asset} is not allowlisted for "${req.network}"`);
     }
 
     const nowSec = Math.floor(now() / 1000);
+    const ttl = Math.min(req.maxTimeoutSeconds ?? maxAuthSeconds, maxAuthSeconds);
     const authorization: X402Authorization = {
       from: account.address,
       to: req.payTo as Hex,
       value: parseAmount(req.amount).toString(),
       validAfter: "0",
-      validBefore: String(nowSec + (req.maxTimeoutSeconds ?? 600)),
+      validBefore: String(nowSec + ttl),
       nonce: `0x${randomBytes(32).toString("hex")}` as Hex,
     };
 

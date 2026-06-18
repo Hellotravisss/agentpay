@@ -34,6 +34,7 @@ beforeAll(async () => {
     },
     rails: [new MockRail()],
     rates: new FixedRateProvider({ "USDC:USD": "1" }),
+    allowPrivateTargets: true,
   });
   gatewayUrl = await listen(gateway.server);
 });

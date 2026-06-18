@@ -42,6 +42,7 @@ const gateway = createGateway({
       signPayment: createEip3009Signer({ privateKey }),
     }),
   ],
+  allowPrivateTargets: true, // the reproducible recipe points at a local x402 merchant
 });
 
 const PORT = 4020;

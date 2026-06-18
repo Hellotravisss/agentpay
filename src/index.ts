@@ -74,6 +74,8 @@ if (isMain) {
       process.env.APIKEYS_FILE ? openStore<ApiKey>(process.env.APIKEYS_FILE, "apikeys") : undefined,
     ),
     requireApiKey: process.env.REQUIRE_API_KEY === "1",
+    adminToken: process.env.ADMIN_TOKEN,
+    allowPrivateTargets: process.env.ALLOW_PRIVATE_TARGETS === "1",
   });
 
   // Hot-reload: pick up out-of-band edits to the policy file (debounced).
@@ -92,9 +94,17 @@ if (isMain) {
     }, 50);
   });
 
-  server.listen(port, () => {
-    console.log(`agentpay listening on http://localhost:${port}`);
-    console.log(`dashboard:   http://localhost:${port}/admin`);
+  // Bind loopback by default so the admin API isn't network-exposed; override with HOST=0.0.0.0.
+  const host = process.env.HOST ?? "127.0.0.1";
+  server.listen(port, host, () => {
+    console.log(`agentpay listening on http://${host}:${port}`);
+    console.log(`dashboard:   http://${host}:${port}/admin`);
     console.log(`policy file: ${policyPath} (editable via API + hot-reload)`);
+    if (!process.env.ADMIN_TOKEN) {
+      console.warn("⚠  admin API is UNAUTHENTICATED — set ADMIN_TOKEN before exposing this beyond localhost.");
+    }
+    if (host !== "127.0.0.1" && host !== "localhost" && !process.env.ADMIN_TOKEN) {
+      console.warn(`⚠  bound to ${host} with no ADMIN_TOKEN — anyone on the network can mint keys and edit policy.`);
+    }
   });
 }

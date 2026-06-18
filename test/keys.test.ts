@@ -66,6 +66,7 @@ describe("API keys admin + auth (gateway)", () => {
       policyManager: new PolicyManager({ agents: [{ agentId: "buyer", enabled: true, currency: "USD", dailyBudget: "5" }] }),
       rails: [new MockRail()],
       requireApiKey: true, // X-Agent-Id is rejected; only a valid Bearer key works
+      allowPrivateTargets: true,
     });
     gatewayUrl = await listen(gateway.server);
   });

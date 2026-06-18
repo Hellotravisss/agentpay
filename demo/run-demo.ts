@@ -47,6 +47,7 @@ const gateway = createGateway({
   policyConfig,
   rails: [new MockRail(), new MockRail({ name: "mock-alipay" })],
   rates: new FixedRateProvider(policyConfig.fxRates ?? {}),
+  allowPrivateTargets: true, // demo proxies to a local paid API
 });
 
 /** Call a paid resource through the gateway and pretty-print the outcome. */

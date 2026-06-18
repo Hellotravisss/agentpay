@@ -61,7 +61,7 @@ describe("policy admin API (gateway)", () => {
     paidApi = createPaidApi([{ path: "/x", options: [{ network: "mock", amount: "0.05", currency: "USD", payTo: "m" }], body: { ok: true } }]);
     paidUrl = await listen(paidApi);
     manager = new PolicyManager({ agents: [] });
-    gateway = createGateway({ policyManager: manager, rails: [new MockRail()] });
+    gateway = createGateway({ policyManager: manager, rails: [new MockRail()], allowPrivateTargets: true });
     gatewayUrl = await listen(gateway.server);
   });
   afterAll(() => { paidApi.close(); gateway.server.close(); });

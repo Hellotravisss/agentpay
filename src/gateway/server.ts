@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { AgentPolicy, ApprovalStatus, PaymentRequirement, PolicyConfig } from "../types.js";
+import { isBlockedTarget } from "./ssrf.js";
 import type { PaymentRail } from "../rails/rail.js";
 import { SpendLedger, startOfUtcDay, startOfUtcMonth } from "../ledger/ledger.js";
 import { AuditLog } from "../audit/audit.js";
@@ -10,6 +12,9 @@ import { evaluate } from "../policy/engine.js";
 import { PolicyManager, validateAgentPolicy } from "../policy/manager.js";
 import { formatAmount, parseAmount } from "../money.js";
 import { convert, FixedRateProvider, type RateProvider } from "../fx/rates.js";
+
+/** Abort an upstream fetch that hangs, so a slow/huge target can't tie up the gateway. */
+const UPSTREAM_TIMEOUT_MS = 30_000;
 
 /** A RateProvider that can asynchronously warm its cache (e.g. a live source). */
 function isRefreshable(r: RateProvider): r is RateProvider & { refresh(pairs: Array<[string, string]>): Promise<void> } {
@@ -34,6 +39,18 @@ export interface GatewayOptions {
   apiKeyStore?: ApiKeyStore;
   /** When true, reject `X-Agent-Id` — only a valid Bearer API key authenticates. */
   requireApiKey?: boolean;
+  /**
+   * Token guarding the admin API (`/admin/*` data + mutations). When set,
+   * those endpoints require `Authorization: Bearer <token>` or `X-Admin-Token`.
+   * When unset the admin API is open — only safe behind a trusted network /
+   * loopback bind (the CLI warns and binds 127.0.0.1 by default).
+   */
+  adminToken?: string;
+  /**
+   * Allow the proxy to fetch private/loopback addresses. Off by default (SSRF
+   * guard on); turn on only for local testing against 127.0.0.1 targets.
+   */
+  allowPrivateTargets?: boolean;
   /** Injectable clock for tests. */
   now?: () => number;
 }
@@ -82,7 +99,12 @@ export function createGateway(options: GatewayOptions): Gateway {
     }
 
     if (url.pathname === "/admin" || url.pathname === "/admin/") {
-      return sendHtml(res, dashboardHtml());
+      return sendHtml(res, dashboardHtml()); // static page holds no secrets; its data fetches are gated below
+    }
+
+    // Every admin data/mutation endpoint requires the admin token (when configured).
+    if (url.pathname.startsWith("/admin/") && !adminAuthorized(req)) {
+      return sendJson(res, 401, { error: "admin_unauthorized", message: "Send Authorization: Bearer <admin token> or X-Admin-Token" });
     }
 
     if (url.pathname === "/admin/policy") {
@@ -268,12 +290,16 @@ export function createGateway(options: GatewayOptions): Gateway {
     if (!target || !/^https?:\/\//.test(target)) {
       return sendJson(res, 400, { error: "bad_target", message: "Provide an absolute http(s) target via ?url= or X-Target-Url" });
     }
+    if (!options.allowPrivateTargets && (await isBlockedTarget(target))) {
+      return sendJson(res, 403, { error: "blocked_target", message: "Target resolves to a private or loopback address" });
+    }
 
     const body = await readBody(req);
     const upstreamInit: RequestInit = {
       method: req.method,
       headers: forwardableHeaders(req),
       body: body.length > 0 ? body : undefined,
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     };
 
     const first = await fetch(target, upstreamInit);
@@ -360,11 +386,23 @@ export function createGateway(options: GatewayOptions): Gateway {
     const second = await fetch(target, {
       ...upstreamInit,
       headers: { ...forwardableHeaders(req), "X-PAYMENT": receipt.proof },
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
     res.setHeader("X-Gateway-Payment-Id", receipt.id);
     res.setHeader("X-Gateway-Rail", rail.name);
     res.setHeader("X-Gateway-Payment-Amount", `${receipt.amount} ${receipt.currency}`);
     return relay(res, second);
+  }
+
+  /** Constant-time check of the admin token. Open (true) when no token is configured. */
+  function adminAuthorized(req: IncomingMessage): boolean {
+    if (!options.adminToken) return true; // unauthenticated mode — rely on the loopback bind + startup warning
+    const provided =
+      headerValue(req, "x-admin-token") ?? headerValue(req, "authorization")?.replace(/^Bearer\s+/i, "").trim();
+    if (!provided) return false;
+    const a = createHash("sha256").update(provided).digest();
+    const b = createHash("sha256").update(options.adminToken).digest();
+    return timingSafeEqual(a, b); // hashes equalize length, so no length leak
   }
 
   function resolveAgentId(req: IncomingMessage): string | undefined {
