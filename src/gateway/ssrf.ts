@@ -1,5 +1,8 @@
-import { isIP } from "node:net";
-import { lookup } from "node:dns/promises";
+import { isIP, type LookupFunction } from "node:net";
+import dns from "node:dns";
+import { lookup as lookupAsync } from "node:dns/promises";
+
+type LookupCallback = (err: NodeJS.ErrnoException | null, address?: string | dns.LookupAddress[], family?: number) => void;
 
 /**
  * SSRF guard for the proxy target. The gateway fetches a caller-supplied URL
@@ -65,9 +68,40 @@ export async function isBlockedTarget(urlStr: string): Promise<boolean> {
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
 
   try {
-    const addrs = await lookup(bare, { all: true });
+    const addrs = await lookupAsync(bare, { all: true });
     return addrs.length === 0 || addrs.some((a) => isPrivateIp(a.address));
   } catch {
     return true; // unresolvable → block
   }
+}
+
+/**
+ * A `dns.lookup` drop-in for `node:http`/`https` that resolves the host and
+ * **refuses to return a private/reserved address**. Used as the `lookup`
+ * option on every proxy request, so the SSRF guard runs at connect time for the
+ * initial request *and every redirect hop* — closing both DNS-rebinding (the
+ * resolved IP is the one connected to) and redirect-to-internal SSRF. Set
+ * `allowPrivate` only for local testing.
+ */
+export function guardedLookup(allowPrivate: boolean): LookupFunction {
+  const impl = (hostname: string, options: unknown, callback: LookupCallback): void => {
+    const cb = (typeof options === "function" ? options : callback) as LookupCallback;
+    const opts: dns.LookupOptions =
+      typeof options === "object" && options !== null ? (options as dns.LookupOptions)
+      : typeof options === "number" ? { family: options }
+      : {};
+
+    dns.lookup(hostname, { ...opts, all: true }, (err, addresses) => {
+      if (err) return cb(err);
+      if (!allowPrivate && (addresses.length === 0 || addresses.some((a) => isPrivateIp(a.address)))) {
+        const blocked: NodeJS.ErrnoException = new Error(`Blocked target host "${hostname}" — resolves to a private/reserved address`);
+        blocked.code = "SSRF_BLOCKED";
+        return cb(blocked);
+      }
+      if (opts.all) return cb(null, addresses);
+      const first = addresses[0]!;
+      return cb(null, first.address, first.family);
+    });
+  };
+  return impl as unknown as LookupFunction;
 }

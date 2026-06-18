@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { AgentPolicy, ApprovalStatus, PaymentRequirement, PolicyConfig } from "../types.js";
-import { isBlockedTarget } from "./ssrf.js";
+import { safeRequest, readStreamText, type SafeResponse } from "./safe-fetch.js";
 import type { PaymentRail } from "../rails/rail.js";
 import { SpendLedger, startOfUtcDay, startOfUtcMonth } from "../ledger/ledger.js";
 import { AuditLog } from "../audit/audit.js";
@@ -18,6 +18,9 @@ const UPSTREAM_TIMEOUT_MS = 30_000;
 
 /** Cap on the inbound request body the gateway buffers, so a huge body can't exhaust memory. */
 const MAX_REQUEST_BYTES = 1_048_576; // 1 MiB
+
+/** Cap on the 402 response body we read to parse payment requirements (they're small). */
+const MAX_402_BYTES = 262_144; // 256 KiB
 
 /** A RateProvider that can asynchronously warm its cache (e.g. a live source). */
 function isRefreshable(r: RateProvider): r is RateProvider & { refresh(pairs: Array<[string, string]>): Promise<void> } {
@@ -310,9 +313,6 @@ export function createGateway(options: GatewayOptions): Gateway {
     if (!target || !/^https?:\/\//.test(target)) {
       return sendJson(res, 400, { error: "bad_target", message: "Provide an absolute http(s) target via ?url= or X-Target-Url" });
     }
-    if (!options.allowPrivateTargets && (await isBlockedTarget(target))) {
-      return sendJson(res, 403, { error: "blocked_target", message: "Target resolves to a private or loopback address" });
-    }
 
     if (Number(req.headers["content-length"] ?? 0) > MAX_REQUEST_BYTES) {
       req.resume(); // drain the upload so the client can read the response cleanly
@@ -324,20 +324,39 @@ export function createGateway(options: GatewayOptions): Gateway {
     } catch {
       return sendJson(res, 413, { error: "request_too_large", message: `Request body exceeds ${MAX_REQUEST_BYTES} bytes` });
     }
-    const upstreamInit: RequestInit = {
-      method: req.method,
-      headers: forwardableHeaders(req),
-      body: body.length > 0 ? body : undefined,
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    };
 
-    const first = await fetch(target, upstreamInit);
+    // Fetch through the SSRF-guarded client: DNS is pinned and every redirect
+    // hop is re-validated, so neither rebinding nor a redirect-to-internal slips through.
+    const fetchTarget = (extraHeaders?: Record<string, string>) =>
+      safeRequest(target, {
+        method: req.method,
+        headers: { ...forwardableHeaders(req), ...extraHeaders },
+        body: body.length > 0 ? body : undefined,
+        timeoutMs: UPSTREAM_TIMEOUT_MS,
+        allowPrivateTargets: options.allowPrivateTargets,
+      });
+
+    let first: SafeResponse;
+    try {
+      first = await fetchTarget();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "SSRF_BLOCKED") {
+        return sendJson(res, 403, { error: "blocked_target", message: "Target resolves to a private or loopback address" });
+      }
+      return sendJson(res, 502, { error: "upstream_error", message: String(err instanceof Error ? err.message : err) });
+    }
     if (first.status !== 402) {
       return relay(res, first);
     }
 
     // --- 402 handshake ---
-    const requirements = await parseRequirements(first, target);
+    let bodyText: string;
+    try {
+      bodyText = await readStreamText(first.body, MAX_402_BYTES);
+    } catch {
+      return sendJson(res, 502, { error: "unparseable_402", message: "402 response body too large or unreadable" });
+    }
+    const requirements = parseRequirements(bodyText, target);
     if (requirements.length === 0) {
       return sendJson(res, 502, { error: "unparseable_402", message: "Target returned 402 without recognizable payment requirements" });
     }
@@ -416,11 +435,12 @@ export function createGateway(options: GatewayOptions): Gateway {
       ledger.record(receipt);
       audit.log("payment_executed", agentId, { receipt }, timestamp);
 
-      const second = await fetch(target, {
-        ...upstreamInit,
-        headers: { ...forwardableHeaders(req), "X-PAYMENT": receipt.proof },
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
+      let second: SafeResponse;
+      try {
+        second = await fetchTarget({ "X-PAYMENT": receipt.proof });
+      } catch (err) {
+        return sendJson(res, 502, { error: "upstream_error", message: String(err instanceof Error ? err.message : err) });
+      }
       res.setHeader("X-Gateway-Payment-Id", receipt.id);
       res.setHeader("X-Gateway-Rail", rail.name);
       res.setHeader("X-Gateway-Payment-Amount", `${receipt.amount} ${receipt.currency}`);
@@ -493,10 +513,10 @@ export function route(
  * gateway's simplified shape and the x402 wire shape ({ accepts: [...] } with
  * maxAmountRequired in 6-dp atomic units).
  */
-async function parseRequirements(res: Response, target: string): Promise<PaymentRequirement[]> {
+function parseRequirements(text: string, target: string): PaymentRequirement[] {
   let body: unknown;
   try {
-    body = await res.json();
+    body = JSON.parse(text);
   } catch {
     return [];
   }
@@ -570,20 +590,13 @@ function readBody(req: IncomingMessage, maxBytes = MAX_REQUEST_BYTES): Promise<B
   });
 }
 
-async function relay(res: ServerResponse, upstream: Response): Promise<void> {
+function relay(res: ServerResponse, upstream: SafeResponse): void {
   res.statusCode = upstream.status;
-  const ct = upstream.headers.get("content-type");
-  if (ct) res.setHeader("content-type", ct);
-  if (!upstream.body) return void res.end();
-  // Stream chunks through instead of buffering the whole body, so a huge
-  // upstream response can't be read entirely into memory.
-  const reader = upstream.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) res.write(Buffer.from(value));
-  }
-  res.end();
+  const ct = upstream.headers["content-type"];
+  if (ct) res.setHeader("content-type", Array.isArray(ct) ? ct[0]! : ct);
+  // Pipe the body through so a huge upstream response is never buffered whole into memory.
+  upstream.body.on("error", () => res.destroy());
+  upstream.body.pipe(res);
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

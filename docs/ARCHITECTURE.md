@@ -74,7 +74,8 @@ it failed.
 | [`auth/keys.ts`](../src/auth/keys.ts) | Multi-tenant API keys | Maps a Bearer secret to an agent; stores only the SHA-256 hash, mint/expire/revoke |
 | [`store/store.ts`](../src/store/store.ts) | Persistence backends | One `RecordStore` interface; JSONL or transactional SQLite (`node:sqlite`) |
 | [`gateway/server.ts`](../src/gateway/server.ts) | The proxy + router + admin API | Orchestrates the lifecycle above; `route()`, admin auth, and per-agent locking live here |
-| [`gateway/ssrf.ts`](../src/gateway/ssrf.ts) | Proxy target guard | Blocks private/loopback/metadata addresses so the proxy can't be turned into an SSRF vector |
+| [`gateway/ssrf.ts`](../src/gateway/ssrf.ts) | Proxy target guard | Classifies private addresses and provides the pinned, guarded DNS lookup |
+| [`gateway/safe-fetch.ts`](../src/gateway/safe-fetch.ts) | SSRF-safe HTTP client | stdlib client that pins resolution and re-validates every redirect hop; streams bodies |
 | [`gateway/dashboard.html`](../src/gateway/dashboard.html) | Admin dashboard | One self-contained page served at `GET /admin`; reads the `/admin/*` JSON — a view, not a new data path |
 | [`rails/rail.ts`](../src/rails/rail.ts) | The rail interface | `supports(network)` + `pay(ctx)` — the only seam between core and money movement |
 
@@ -183,15 +184,17 @@ Because it moves money, a few attacker classes drove the hardening (see the
   bounds who gets paid.
 - **A network attacker reaching the gateway** is denied the admin plane by the
   admin token (and the loopback-bind default), can't pivot through the proxy
-  into internal services (SSRF guard), and can't exhaust memory (body cap +
-  streamed relay + fetch timeouts).
+  into internal services (the SSRF guard runs inside a pinned DNS lookup applied
+  at connect time and on every redirect hop, so rebinding and redirect-to-
+  internal are both closed), and can't exhaust memory (body cap + streamed relay
+  + fetch timeouts).
 - **Concurrency as an attacker** — racing requests to slip past a budget — is
   closed by per-agent serialization of the check→pay→record window.
 
-Known residuals (acceptable for an MVP, called out so they're not silent): DNS
-rebinding between the SSRF check and `fetch` re-resolving; admin CSRF if the
-operator runs with no `ADMIN_TOKEN` *and* exposes the port to a browser;
-approval matching has no up-front reservation. None of these bite a deployment
-that follows the checklist.
+Known residuals (acceptable for an MVP, called out so they're not silent): admin
+CSRF if the operator runs with no `ADMIN_TOKEN` *and* exposes the port to a
+browser; approval matching has no up-front reservation (concurrent holds are
+re-checked against the budget at execution, not reserved up front). Neither bites
+a deployment that follows the checklist.
 
 See the [roadmap](../README.md#status--roadmap) for what's next.

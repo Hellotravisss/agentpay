@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
-import { isBlockedTarget, isPrivateIp } from "../src/gateway/ssrf.js";
+import { createServer, type Server } from "node:http";
+import { isBlockedTarget, isPrivateIp, guardedLookup } from "../src/gateway/ssrf.js";
+import { safeRequest, readStreamText } from "../src/gateway/safe-fetch.js";
 import { createEip3009Signer, decodeXPayment, DEFAULT_USDC } from "../src/rails/x402-signer.js";
 import { createGateway, type Gateway } from "../src/gateway/server.js";
 import { PolicyManager } from "../src/policy/manager.js";
@@ -27,6 +28,44 @@ describe("SSRF guard", () => {
     expect(await isBlockedTarget("http://[::1]/")).toBe(true);
     expect(await isBlockedTarget("not a url")).toBe(true);
     expect(await isBlockedTarget("http://8.8.8.8/")).toBe(false); // literal public IP, no DNS
+  });
+});
+
+describe("pinned resolution & redirect re-validation", () => {
+  const call = (fn: ReturnType<typeof guardedLookup>, host: string): Promise<string> =>
+    new Promise((resolve) =>
+      (fn as (h: string, o: unknown, cb: (e: NodeJS.ErrnoException | null, a?: unknown) => void) => void)(
+        host, { all: false }, (e, a) => resolve(e ? `ERR:${e.code}` : String(a)),
+      ),
+    );
+
+  it("guardedLookup refuses a private-resolving host, passes a public IP", async () => {
+    expect(await call(guardedLookup(false), "localhost")).toBe("ERR:SSRF_BLOCKED");
+    expect(await call(guardedLookup(true), "localhost")).toMatch(/^(127\.0\.0\.1|::1)$/);
+    expect(await call(guardedLookup(false), "8.8.8.8")).toBe("8.8.8.8");
+  });
+
+  it("safeRequest blocks a private literal-IP target (incl. cloud metadata)", async () => {
+    await expect(safeRequest("http://169.254.169.254/latest/meta-data/", { timeoutMs: 2000 })).rejects.toMatchObject({
+      code: "SSRF_BLOCKED",
+    });
+  });
+
+  it("safeRequest follows redirects, re-validating each hop", async () => {
+    const b = createServer((_q, r) => { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ ok: true })); });
+    await new Promise<void>((res) => b.listen(0, "127.0.0.1", res));
+    const bUrl = `http://127.0.0.1:${(b.address() as AddressInfo).port}/b`;
+    const a = createServer((_q, r) => { r.statusCode = 302; r.setHeader("location", bUrl); r.end(); });
+    await new Promise<void>((res) => a.listen(0, "127.0.0.1", res));
+    const aUrl = `http://127.0.0.1:${(a.address() as AddressInfo).port}/a`;
+    try {
+      const resp = await safeRequest(aUrl, { allowPrivateTargets: true });
+      expect(resp.status).toBe(200);
+      expect(JSON.parse(await readStreamText(resp.body, 10_000))).toEqual({ ok: true });
+    } finally {
+      a.close();
+      b.close();
+    }
   });
 });
 
