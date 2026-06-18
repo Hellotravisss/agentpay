@@ -167,7 +167,7 @@ It moves money, so the control plane is hardened, not just the math:
 - **DoS limits** — 1 MiB request-body cap (`413`), 30 s upstream fetch timeout, and the upstream response is streamed (not buffered whole into memory).
 - **Money integrity** — exact `bigint` arithmetic (no floats), API keys stored only as SHA-256 hashes (raw secret shown once), and the upstream `Authorization` header is never forwarded.
 
-**Deploy checklist:** set `ADMIN_TOKEN`, enable `REQUIRE_API_KEY=1`, keep `allowPrivateTargets` off, and put the gateway behind TLS. See the threat notes in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Deploy checklist:** set `ADMIN_TOKEN`, enable `REQUIRE_API_KEY=1`, keep `allowPrivateTargets` off, and put the gateway behind TLS. Full threat model, hardening list, and checklist in [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Status & roadmap
 
