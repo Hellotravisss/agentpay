@@ -73,7 +73,8 @@ it failed.
 | [`approvals/approvals.ts`](../src/approvals/approvals.ts) | Held-payment store | Human-in-the-loop gate; snapshot-append state so it persists over an append-only store |
 | [`auth/keys.ts`](../src/auth/keys.ts) | Multi-tenant API keys | Maps a Bearer secret to an agent; stores only the SHA-256 hash, mint/expire/revoke |
 | [`store/store.ts`](../src/store/store.ts) | Persistence backends | One `RecordStore` interface; JSONL or transactional SQLite (`node:sqlite`) |
-| [`gateway/server.ts`](../src/gateway/server.ts) | The proxy + router + admin API | Orchestrates the lifecycle above; `route()` lives here |
+| [`gateway/server.ts`](../src/gateway/server.ts) | The proxy + router + admin API | Orchestrates the lifecycle above; `route()`, admin auth, and per-agent locking live here |
+| [`gateway/ssrf.ts`](../src/gateway/ssrf.ts) | Proxy target guard | Blocks private/loopback/metadata addresses so the proxy can't be turned into an SSRF vector |
 | [`gateway/dashboard.html`](../src/gateway/dashboard.html) | Admin dashboard | One self-contained page served at `GET /admin`; reads the `/admin/*` JSON — a view, not a new data path |
 | [`rails/rail.ts`](../src/rails/rail.ts) | The rail interface | `supports(network)` + `pay(ctx)` — the only seam between core and money movement |
 
@@ -166,5 +167,31 @@ because each had a seam waiting for it:
 - **SQLite stores a JSON blob per row.** Durable and externally queryable, but
   the in-memory query engine still does the filtering; pushing budget queries
   into SQL would matter only at a scale this MVP doesn't target.
+
+## Threat model
+
+Because it moves money, a few attacker classes drove the hardening (see the
+[Security](../README.md#security) summary for the operator checklist):
+
+- **A compromised or hostile agent** is the baseline assumption — that's the
+  whole point of the gateway. It's bounded by deny-by-default policy, per-agent
+  budgets/caps, and the audit log; it never holds a credential.
+- **A malicious merchant** (the `402` responder) is *not* trusted. It controls
+  the amount, payee, asset, and EIP-712 domain it asks for — so the x402 signer
+  pins assets to an allowlist (a hostile `402` can't redirect the signature to a
+  different token), policy caps bound the amount, and the payee allow/blocklist
+  bounds who gets paid.
+- **A network attacker reaching the gateway** is denied the admin plane by the
+  admin token (and the loopback-bind default), can't pivot through the proxy
+  into internal services (SSRF guard), and can't exhaust memory (body cap +
+  streamed relay + fetch timeouts).
+- **Concurrency as an attacker** — racing requests to slip past a budget — is
+  closed by per-agent serialization of the check→pay→record window.
+
+Known residuals (acceptable for an MVP, called out so they're not silent): DNS
+rebinding between the SSRF check and `fetch` re-resolving; admin CSRF if the
+operator runs with no `ADMIN_TOKEN` *and* exposes the port to a browser;
+approval matching has no up-front reservation. None of these bite a deployment
+that follows the checklist.
 
 See the [roadmap](../README.md#status--roadmap) for what's next.

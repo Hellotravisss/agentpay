@@ -6,6 +6,8 @@ import { createEip3009Signer, decodeXPayment, DEFAULT_USDC } from "../src/rails/
 import { createGateway, type Gateway } from "../src/gateway/server.js";
 import { PolicyManager } from "../src/policy/manager.js";
 import { MockRail } from "../src/rails/mock.js";
+import { FixedRateProvider } from "../src/fx/rates.js";
+import { createPaidApi } from "../demo/paid-api.js";
 import type { PaymentContext } from "../src/types.js";
 
 describe("SSRF guard", () => {
@@ -112,5 +114,47 @@ describe("x402 signer asset allowlist", () => {
     const signer = createEip3009Signer({ privateKey: KEY, now: () => t0, maxAuthorizationSeconds: 120 });
     const header = await signer(base({ maxTimeoutSeconds: 999999 }));
     expect(decodeXPayment(header).payload.authorization.validBefore).toBe(String(Math.floor(t0 / 1000) + 120));
+  });
+});
+
+describe("concurrency & DoS limits", () => {
+  let paidApi: Server, gateway: Gateway, paidUrl: string, gatewayUrl: string;
+  const listen = (s: Server): Promise<string> =>
+    new Promise((r) => s.listen(0, "127.0.0.1", () => r(`http://127.0.0.1:${(s.address() as AddressInfo).port}`)));
+
+  beforeAll(async () => {
+    paidApi = createPaidApi([{ path: "/x", options: [{ network: "mock", amount: "0.05", currency: "USD", payTo: "m" }], body: { ok: true } }]);
+    paidUrl = await listen(paidApi);
+    gateway = createGateway({
+      policyManager: new PolicyManager({ agents: [{ agentId: "bot", enabled: true, currency: "USD", dailyBudget: "0.10" }] }),
+      rails: [new MockRail()],
+      rates: new FixedRateProvider({ "USD:USD": "1" }),
+      allowPrivateTargets: true,
+    });
+    gatewayUrl = await listen(gateway.server);
+  });
+  afterAll(() => { paidApi.close(); gateway.server.close(); });
+
+  it("holds the daily budget under concurrent payments (no double-spend)", async () => {
+    // Budget 0.10 / price 0.05 → at most 2 may succeed. Fire 5 at once.
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        fetch(`${gatewayUrl}/proxy?url=${encodeURIComponent(paidUrl + "/x")}`, { headers: { "x-agent-id": "bot" } }).then((r) => r.status),
+      ),
+    );
+    expect(results.filter((s) => s === 200)).toHaveLength(2);
+    expect(results.filter((s) => s === 403)).toHaveLength(3);
+
+    const spend = (await (await fetch(`${gatewayUrl}/admin/spend/bot`)).json()) as { spentToday: string };
+    expect(spend.spentToday).toBe("0.1"); // never exceeded the cap
+  });
+
+  it("rejects an oversized request body with 413", async () => {
+    const res = await fetch(`${gatewayUrl}/proxy?url=${encodeURIComponent(paidUrl + "/x")}`, {
+      method: "POST",
+      headers: { "x-agent-id": "bot", "content-type": "application/octet-stream" },
+      body: Buffer.alloc(1_100_000), // > 1 MiB cap
+    });
+    expect(res.status).toBe(413);
   });
 });

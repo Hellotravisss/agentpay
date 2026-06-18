@@ -156,6 +156,19 @@ X402_PRIVATE_KEY=0x... TARGET_URL=http://localhost:4021/premium npx tsx demo/x40
 
 Or point `TARGET_URL` at any live x402 resource that settles on `base-sepolia`.
 
+## Security
+
+It moves money, so the control plane is hardened, not just the math:
+
+- **Admin API auth** — set `ADMIN_TOKEN` and every `/admin/*` data/mutation endpoint requires it (`Authorization: Bearer` or `X-Admin-Token`, constant-time compared). Unset, the admin API is open, so the CLI **binds `127.0.0.1` by default** (override with `HOST`) and warns at startup. The dashboard carries the token (seed it once via `/admin#token=…`).
+- **SSRF guard** — `/proxy` refuses targets that resolve to private/loopback/link-local ranges (incl. the `169.254.169.254` cloud-metadata IP) by default. Opt in with `allowPrivateTargets` only for local testing.
+- **x402 asset allowlist** — the signer refuses to sign an EIP-3009 authorization for any token not on a per-network allowlist (default: canonical USDC), so a malicious `402` can't trick the wallet into authorizing a transfer of a different, more valuable token. Authorization validity is clamped (`maxAuthorizationSeconds`).
+- **No double-spend under concurrency** — the decide→execute→record window is serialized per agent, so concurrent payments can't both pass the budget check before either is recorded.
+- **DoS limits** — 1 MiB request-body cap (`413`), 30 s upstream fetch timeout, and the upstream response is streamed (not buffered whole into memory).
+- **Money integrity** — exact `bigint` arithmetic (no floats), API keys stored only as SHA-256 hashes (raw secret shown once), and the upstream `Authorization` header is never forwarded.
+
+**Deploy checklist:** set `ADMIN_TOKEN`, enable `REQUIRE_API_KEY=1`, keep `allowPrivateTargets` off, and put the gateway behind TLS. See the threat notes in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Status & roadmap
 
 This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit log, approvals, persistence, and 402 proxy flow are tested and working end to end against mock rails; the x402 rail has settled a real payment on Base Sepolia. Done since the first cut:

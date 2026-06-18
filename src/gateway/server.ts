@@ -16,6 +16,9 @@ import { convert, FixedRateProvider, type RateProvider } from "../fx/rates.js";
 /** Abort an upstream fetch that hangs, so a slow/huge target can't tie up the gateway. */
 const UPSTREAM_TIMEOUT_MS = 30_000;
 
+/** Cap on the inbound request body the gateway buffers, so a huge body can't exhaust memory. */
+const MAX_REQUEST_BYTES = 1_048_576; // 1 MiB
+
 /** A RateProvider that can asynchronously warm its cache (e.g. a live source). */
 function isRefreshable(r: RateProvider): r is RateProvider & { refresh(pairs: Array<[string, string]>): Promise<void> } {
   return typeof (r as { refresh?: unknown }).refresh === "function";
@@ -84,6 +87,23 @@ export function createGateway(options: GatewayOptions): Gateway {
   const now = options.now ?? Date.now;
   const policy = options.policyManager ?? new PolicyManager(options.policyConfig ?? { agents: [] });
   const keys = options.apiKeyStore ?? new ApiKeyStore(undefined, options.now);
+
+  // Per-agent FIFO lock: chains each agent's critical sections so they run one
+  // at a time (different agents stay concurrent). Map entries self-clean.
+  const agentLocks = new Map<string, Promise<unknown>>();
+  function withAgentLock<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
+    const prior = agentLocks.get(agentId) ?? Promise.resolve();
+    const run = prior.then(fn, fn); // run after the prior settles, success or failure
+    const tail = run.then(
+      () => {},
+      () => {},
+    );
+    agentLocks.set(agentId, tail);
+    tail.then(() => {
+      if (agentLocks.get(agentId) === tail) agentLocks.delete(agentId);
+    });
+    return run;
+  }
 
   const server = createServer((req, res) => {
     handle(req, res).catch((err: unknown) => {
@@ -294,7 +314,16 @@ export function createGateway(options: GatewayOptions): Gateway {
       return sendJson(res, 403, { error: "blocked_target", message: "Target resolves to a private or loopback address" });
     }
 
-    const body = await readBody(req);
+    if (Number(req.headers["content-length"] ?? 0) > MAX_REQUEST_BYTES) {
+      req.resume(); // drain the upload so the client can read the response cleanly
+      return sendJson(res, 413, { error: "request_too_large", message: `Request body exceeds ${MAX_REQUEST_BYTES} bytes` });
+    }
+    let body: Buffer;
+    try {
+      body = await readBody(req); // streaming cap is the fallback for chunked bodies with no content-length
+    } catch {
+      return sendJson(res, 413, { error: "request_too_large", message: `Request body exceeds ${MAX_REQUEST_BYTES} bytes` });
+    }
     const upstreamInit: RequestInit = {
       method: req.method,
       headers: forwardableHeaders(req),
@@ -336,62 +365,67 @@ export function createGateway(options: GatewayOptions): Gateway {
     const { requirement, rail } = chosen;
     const ctx = { agentId, requirement, timestamp };
 
-    const decision = evaluate(agentPolicy, ctx, ledger, rates);
-    if (!decision.allow) {
-      audit.log("payment_denied", agentId, { requirement, rail: rail.name, rule: decision.rule, reason: decision.reason }, timestamp);
-      return sendJson(res, 403, { error: "payment_denied", rule: decision.rule, reason: decision.reason });
-    }
-
-    // evaluate() already proved the rate exists; amount in the policy's base currency.
-    const rate = rates.rate(requirement.currency, agentPolicy.currency)!;
-    const baseAmount = convert(parseAmount(requirement.amount), rate);
-
-    // --- human-in-the-loop: hold payments at/over the approval threshold ---
-    if (agentPolicy.requireApprovalOver !== undefined && baseAmount >= parseAmount(agentPolicy.requireApprovalOver)) {
-      const held = approvals.findMatch(agentId, requirement);
-      if (!held) {
-        const a = approvals.create(agentId, requirement, formatAmount(baseAmount), agentPolicy.currency);
-        audit.log("payment_held", agentId, { requirement, rail: rail.name, approvalId: a.id, baseAmount: a.baseAmount }, timestamp);
-        return sendJson(res, 202, {
-          status: "held_for_approval",
-          approvalId: a.id,
-          reason: `Payment of ${a.baseAmount} ${agentPolicy.currency} requires approval (threshold ${agentPolicy.requireApprovalOver} ${agentPolicy.currency})`,
-        });
+    // Serialize the decide → execute → record window per agent. Without this,
+    // two concurrent payments for the same agent could both pass the budget
+    // check (which reads the ledger) before either records, overspending the cap.
+    return withAgentLock(agentId, async () => {
+      const decision = evaluate(agentPolicy, ctx, ledger, rates);
+      if (!decision.allow) {
+        audit.log("payment_denied", agentId, { requirement, rail: rail.name, rule: decision.rule, reason: decision.reason }, timestamp);
+        return sendJson(res, 403, { error: "payment_denied", rule: decision.rule, reason: decision.reason });
       }
-      if (held.status === "pending") {
-        return sendJson(res, 202, { status: "awaiting_approval", approvalId: held.id });
+
+      // evaluate() already proved the rate exists; amount in the policy's base currency.
+      const rate = rates.rate(requirement.currency, agentPolicy.currency)!;
+      const baseAmount = convert(parseAmount(requirement.amount), rate);
+
+      // --- human-in-the-loop: hold payments at/over the approval threshold ---
+      if (agentPolicy.requireApprovalOver !== undefined && baseAmount >= parseAmount(agentPolicy.requireApprovalOver)) {
+        const held = approvals.findMatch(agentId, requirement);
+        if (!held) {
+          const a = approvals.create(agentId, requirement, formatAmount(baseAmount), agentPolicy.currency);
+          audit.log("payment_held", agentId, { requirement, rail: rail.name, approvalId: a.id, baseAmount: a.baseAmount }, timestamp);
+          return sendJson(res, 202, {
+            status: "held_for_approval",
+            approvalId: a.id,
+            reason: `Payment of ${a.baseAmount} ${agentPolicy.currency} requires approval (threshold ${agentPolicy.requireApprovalOver} ${agentPolicy.currency})`,
+          });
+        }
+        if (held.status === "pending") {
+          return sendJson(res, 202, { status: "awaiting_approval", approvalId: held.id });
+        }
+        if (held.status === "rejected") {
+          approvals.consume(held.id);
+          audit.log("payment_denied", agentId, { requirement, rail: rail.name, rule: "approval_rejected", approvalId: held.id }, timestamp);
+          return sendJson(res, 403, { error: "payment_denied", rule: "approval_rejected", reason: "A reviewer rejected this payment" });
+        }
+        approvals.consume(held.id); // approved → consume once and execute
       }
-      if (held.status === "rejected") {
-        approvals.consume(held.id);
-        audit.log("payment_denied", agentId, { requirement, rail: rail.name, rule: "approval_rejected", approvalId: held.id }, timestamp);
-        return sendJson(res, 403, { error: "payment_denied", rule: "approval_rejected", reason: "A reviewer rejected this payment" });
+
+      let receipt;
+      try {
+        receipt = await rail.pay(ctx);
+      } catch (err) {
+        audit.log("payment_failed", agentId, { requirement, rail: rail.name, message: String(err) }, timestamp);
+        return sendJson(res, 502, { error: "payment_failed", message: String(err) });
       }
-      approvals.consume(held.id); // approved → consume once and execute
-    }
 
-    let receipt;
-    try {
-      receipt = await rail.pay(ctx);
-    } catch (err) {
-      audit.log("payment_failed", agentId, { requirement, rail: rail.name, message: String(err) }, timestamp);
-      return sendJson(res, 502, { error: "payment_failed", message: String(err) });
-    }
+      receipt.baseAmount = formatAmount(baseAmount);
+      receipt.baseCurrency = agentPolicy.currency;
 
-    receipt.baseAmount = formatAmount(baseAmount);
-    receipt.baseCurrency = agentPolicy.currency;
+      ledger.record(receipt);
+      audit.log("payment_executed", agentId, { receipt }, timestamp);
 
-    ledger.record(receipt);
-    audit.log("payment_executed", agentId, { receipt }, timestamp);
-
-    const second = await fetch(target, {
-      ...upstreamInit,
-      headers: { ...forwardableHeaders(req), "X-PAYMENT": receipt.proof },
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      const second = await fetch(target, {
+        ...upstreamInit,
+        headers: { ...forwardableHeaders(req), "X-PAYMENT": receipt.proof },
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+      res.setHeader("X-Gateway-Payment-Id", receipt.id);
+      res.setHeader("X-Gateway-Rail", rail.name);
+      res.setHeader("X-Gateway-Payment-Amount", `${receipt.amount} ${receipt.currency}`);
+      return relay(res, second);
     });
-    res.setHeader("X-Gateway-Payment-Id", receipt.id);
-    res.setHeader("X-Gateway-Rail", rail.name);
-    res.setHeader("X-Gateway-Payment-Amount", `${receipt.amount} ${receipt.currency}`);
-    return relay(res, second);
   }
 
   /** Constant-time check of the admin token. Open (true) when no token is configured. */
@@ -518,10 +552,19 @@ function forwardableHeaders(req: IncomingMessage): Record<string, string> {
   return out;
 }
 
-function readBody(req: IncomingMessage): Promise<Buffer> {
+function readBody(req: IncomingMessage, maxBytes = MAX_REQUEST_BYTES): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
+    let total = 0;
+    req.on("data", (c: Buffer) => {
+      total += c.length;
+      if (total > maxBytes) {
+        req.destroy();
+        reject(new Error("request_body_too_large"));
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
@@ -531,7 +574,16 @@ async function relay(res: ServerResponse, upstream: Response): Promise<void> {
   res.statusCode = upstream.status;
   const ct = upstream.headers.get("content-type");
   if (ct) res.setHeader("content-type", ct);
-  res.end(Buffer.from(await upstream.arrayBuffer()));
+  if (!upstream.body) return void res.end();
+  // Stream chunks through instead of buffering the whole body, so a huge
+  // upstream response can't be read entirely into memory.
+  const reader = upstream.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) res.write(Buffer.from(value));
+  }
+  res.end();
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
