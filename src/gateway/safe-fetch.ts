@@ -9,6 +9,15 @@ function blocked(host: string): NodeJS.ErrnoException {
   return e;
 }
 
+const SENSITIVE_HEADERS = new Set(["x-payment", "authorization", "cookie"]);
+
+/** Drop credential headers (case-insensitively) before following a cross-origin redirect. */
+function stripSensitiveHeaders(headers: Record<string, string>): void {
+  for (const k of Object.keys(headers)) {
+    if (SENSITIVE_HEADERS.has(k.toLowerCase())) delete headers[k];
+  }
+}
+
 /**
  * Minimal HTTP client for the proxy that the SSRF guard can fully cover. Unlike
  * global `fetch`, it lets us pin DNS resolution (via a guarded `lookup`) and
@@ -60,6 +69,8 @@ export async function safeRequest(urlStr: string, opts: SafeRequestOptions = {})
       if (hop >= maxRedirects) throw new Error("too many redirects");
       const next = new URL(location, url);
       if (next.protocol !== "http:" && next.protocol !== "https:") throw new Error(`redirect to non-http(s) scheme ${next.protocol}`);
+      // Don't forward credentials across origins — a merchant 302 must not leak the X-PAYMENT proof.
+      if (next.protocol !== url.protocol || next.host !== url.host) stripSensitiveHeaders(headers);
       // 303, and 301/302 on an unsafe method, degrade to GET without a body (standard client behavior).
       if (status === 303 || ((status === 301 || status === 302) && method !== "GET" && method !== "HEAD")) {
         method = "GET";

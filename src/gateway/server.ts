@@ -530,12 +530,17 @@ function parseRequirements(text: string, target: string): PaymentRequirement[] {
 
     let amount: string | undefined;
     let currency: string | undefined;
-    if (typeof raw.amount === "string") {
-      amount = raw.amount;
-      currency = typeof raw.currency === "string" ? raw.currency : undefined;
-    } else if (typeof raw.maxAmountRequired === "string") {
-      amount = formatAmount(BigInt(raw.maxAmountRequired));
-      currency = typeof raw.assetSymbol === "string" ? raw.assetSymbol : "USDC";
+    try {
+      if (typeof raw.amount === "string") {
+        parseAmount(raw.amount); // validate; a malformed amount skips this entry rather than 500-ing later
+        amount = raw.amount;
+        currency = typeof raw.currency === "string" ? raw.currency : undefined;
+      } else if (typeof raw.maxAmountRequired === "string") {
+        amount = formatAmount(BigInt(raw.maxAmountRequired)); // throws on non-numeric / negative
+        currency = typeof raw.assetSymbol === "string" ? raw.assetSymbol : "USDC";
+      }
+    } catch {
+      continue; // a hostile merchant can't turn a bad amount into a 500
     }
     if (!amount || !currency) continue;
 

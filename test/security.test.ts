@@ -21,6 +21,13 @@ describe("SSRF guard", () => {
     }
   });
 
+  it("catches non-canonical IPv6 loopback notations", () => {
+    // All of these are ::1 or mapped 127.0.0.1 written so a naive prefix check misses them.
+    for (const ip of ["0::1", "0:0:0:0:0:0:0:1", "::ffff:7f00:1", "::ffff:127.0.0.1", "::"]) {
+      expect(isPrivateIp(ip)).toBe(true);
+    }
+  });
+
   it("blocks loopback/metadata/localhost targets and passes a public IP", async () => {
     expect(await isBlockedTarget("http://127.0.0.1:8080/x")).toBe(true);
     expect(await isBlockedTarget("http://169.254.169.254/latest/meta-data/")).toBe(true);
@@ -62,6 +69,29 @@ describe("pinned resolution & redirect re-validation", () => {
       const resp = await safeRequest(aUrl, { allowPrivateTargets: true });
       expect(resp.status).toBe(200);
       expect(JSON.parse(await readStreamText(resp.body, 10_000))).toEqual({ ok: true });
+    } finally {
+      a.close();
+      b.close();
+    }
+  });
+
+  it("actually routes hostname targets through the guarded lookup (the central control)", async () => {
+    // If http.request ignored our `lookup`, this would ECONNREFUSED, not SSRF_BLOCKED.
+    await expect(safeRequest("http://localhost:1/", { timeoutMs: 1000 })).rejects.toMatchObject({ code: "SSRF_BLOCKED" });
+  });
+
+  it("strips X-PAYMENT when a redirect crosses origin", async () => {
+    let leaked: string | undefined = "not-set";
+    const b = createServer((q, r) => { leaked = q.headers["x-payment"] as string | undefined; r.end("ok"); });
+    await new Promise<void>((res) => b.listen(0, "127.0.0.1", res));
+    const bUrl = `http://127.0.0.1:${(b.address() as AddressInfo).port}/b`; // different port → cross-origin
+    const a = createServer((_q, r) => { r.statusCode = 302; r.setHeader("location", bUrl); r.end(); });
+    await new Promise<void>((res) => a.listen(0, "127.0.0.1", res));
+    const aUrl = `http://127.0.0.1:${(a.address() as AddressInfo).port}/a`;
+    try {
+      const resp = await safeRequest(aUrl, { allowPrivateTargets: true, headers: { "X-PAYMENT": "signed-secret" } });
+      await readStreamText(resp.body, 1000);
+      expect(leaked).toBeUndefined(); // the payment proof did not follow the redirect
     } finally {
       a.close();
       b.close();
@@ -195,5 +225,22 @@ describe("concurrency & DoS limits", () => {
       body: Buffer.alloc(1_100_000), // > 1 MiB cap
     });
     expect(res.status).toBe(413);
+  });
+
+  it("does not 500 on a malformed merchant 402 amount", async () => {
+    const bad = createServer((_q, r) => {
+      r.statusCode = 402;
+      r.setHeader("content-type", "application/json");
+      r.end(JSON.stringify({ accepts: [{ payTo: "m", network: "mock", maxAmountRequired: "abc" }] }));
+    });
+    await new Promise<void>((res) => bad.listen(0, "127.0.0.1", res));
+    const badUrl = `http://127.0.0.1:${(bad.address() as AddressInfo).port}/`;
+    try {
+      const res = await fetch(`${gatewayUrl}/proxy?url=${encodeURIComponent(badUrl)}`, { headers: { "x-agent-id": "bot" } });
+      expect(res.status).toBe(502); // unparseable_402, not a 500
+      expect((await res.json() as { error: string }).error).toBe("unparseable_402");
+    } finally {
+      bad.close();
+    }
   });
 });

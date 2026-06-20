@@ -22,10 +22,13 @@ design rationale see [ARCHITECTURE.md](ARCHITECTURE.md#threat-model).
   is open, so the CLI **binds `127.0.0.1` by default** and warns at startup.
 - **SSRF guard** — the proxy fetches caller-supplied URLs through an
   SSRF-safe client: a pinned DNS lookup refuses private / loopback / link-local
-  addresses (incl. the `169.254.169.254` cloud-metadata IP) **at connect time**,
-  and the check is re-applied to **every redirect hop**. This closes both DNS
-  rebinding and redirect-to-internal. Opt in with `allowPrivateTargets` for
-  local testing only.
+  addresses (incl. the `169.254.169.254` cloud-metadata IP and non-canonical
+  IPv6 loopback notations) **at connect time**, and the check is re-applied to
+  **every redirect hop**. This closes DNS rebinding, redirect-to-internal, and
+  decimal/hex/short-form IP tricks (resolved through the same `getaddrinfo` the
+  connection uses). Credential headers (`X-PAYMENT`, `Authorization`, `Cookie`)
+  are stripped before any **cross-origin** redirect. Opt in with
+  `allowPrivateTargets` for local testing only.
 - **x402 asset allowlist** — the EIP-3009 signer refuses to sign for any token
   not on a per-network allowlist (default: canonical USDC), so a malicious `402`
   can't trick the wallet into authorizing a transfer of a different, more

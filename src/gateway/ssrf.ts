@@ -31,13 +31,44 @@ function isPrivateV4(ip: string): boolean {
   );
 }
 
+/** Expand any valid IPv6 literal (incl. `::` and embedded IPv4) into 8 hextets, or null. */
+function expandV6(ip: string): number[] | null {
+  let s = ip.toLowerCase().split("%")[0]!; // strip zone id
+  let v4: number[] = [];
+  const m = s.match(/:(\d{1,3}(?:\.\d{1,3}){3})$/); // trailing dotted IPv4 (e.g. ::ffff:127.0.0.1)
+  if (m) {
+    const o = m[1]!.split(".").map(Number);
+    if (o.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+    v4 = [(o[0]! << 8) | o[1]!, (o[2]! << 8) | o[3]!];
+    s = s.slice(0, s.length - m[1]!.length);
+  }
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const groupsOf = (str: string) => str.split(":").filter((x) => x !== "").map((h) => parseInt(h, 16));
+  const head = halves[0] ? groupsOf(halves[0]) : [];
+  const tail = halves.length === 2 && halves[1] ? groupsOf(halves[1]) : [];
+  if ([...head, ...tail].some((n) => Number.isNaN(n) || n < 0 || n > 0xffff)) return null;
+  let groups: number[];
+  if (halves.length === 2) {
+    const mid = 8 - head.length - tail.length - v4.length;
+    if (mid < 0) return null;
+    groups = [...head, ...new Array(mid).fill(0), ...tail, ...v4];
+  } else {
+    groups = [...head, ...v4];
+  }
+  return groups.length === 8 ? groups : null;
+}
+
 function isPrivateV6(ip: string): boolean {
-  const v = ip.toLowerCase().split("%")[0]!; // strip zone id
-  if (v === "::1" || v === "::") return true; // loopback / unspecified
-  if (v.startsWith("fc") || v.startsWith("fd")) return true; // unique-local fc00::/7
-  if (v.startsWith("fe8") || v.startsWith("fe9") || v.startsWith("fea") || v.startsWith("feb")) return true; // fe80::/10
-  const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/); // IPv4-mapped
-  if (mapped) return isPrivateV4(mapped[1]!);
+  const g = expandV6(ip);
+  if (!g) return true; // unparseable → block
+  if (g.every((x) => x === 0)) return true; // :: (unspecified)
+  if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return true; // ::1 loopback (any notation)
+  if ((g[0]! & 0xfe00) === 0xfc00) return true; // unique-local fc00::/7
+  if ((g[0]! & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+  if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff) {
+    return isPrivateV4(`${g[6]! >> 8}.${g[6]! & 0xff}.${g[7]! >> 8}.${g[7]! & 0xff}`); // IPv4-mapped
+  }
   return false;
 }
 
