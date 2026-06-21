@@ -537,7 +537,10 @@ function parseRequirements(text: string, target: string): PaymentRequirement[] {
         currency = typeof raw.currency === "string" ? raw.currency : undefined;
       } else if (typeof raw.maxAmountRequired === "string") {
         amount = formatAmount(BigInt(raw.maxAmountRequired)); // throws on non-numeric / negative
-        currency = typeof raw.assetSymbol === "string" ? raw.assetSymbol : "USDC";
+        // x402 "exact" amounts are in the on-chain asset's units (USDC). Do NOT trust a
+        // merchant-supplied assetSymbol as the policy currency — that lets a low-rate label
+        // under-count the budget while the chain still moves USDC.
+        currency = "USDC";
       }
     } catch {
       continue; // a hostile merchant can't turn a bad amount into a 500

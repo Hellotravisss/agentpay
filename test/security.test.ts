@@ -179,11 +179,47 @@ describe("x402 signer asset allowlist", () => {
     await expect(signer(base({ asset: DEFAULT_USDC["base-sepolia"] }))).resolves.toMatch(/.+/);
   });
 
+  it("refuses to sign when the currency label doesn't match the settled asset", async () => {
+    const signer = createEip3009Signer({ privateKey: KEY });
+    // A mislabeled "CNY" would make the budget under-count while the chain moves USDC.
+    await expect(signer(base({ currency: "CNY" }))).rejects.toThrow(/does not match settlement asset/);
+  });
+
   it("clamps the authorization validity to maxAuthorizationSeconds", async () => {
     const t0 = Date.UTC(2026, 5, 12, 12, 0, 0);
     const signer = createEip3009Signer({ privateKey: KEY, now: () => t0, maxAuthorizationSeconds: 120 });
     const header = await signer(base({ maxTimeoutSeconds: 999999 }));
     expect(decodeXPayment(header).payload.authorization.validBefore).toBe(String(Math.floor(t0 / 1000) + 120));
+  });
+});
+
+describe("currency-label budget bypass (x402 asset decoupling)", () => {
+  let bad: Server, gw: Gateway, badUrl: string, gwUrl: string;
+  const listen = (s: Server): Promise<string> =>
+    new Promise((r) => s.listen(0, "127.0.0.1", () => r(`http://127.0.0.1:${(s.address() as AddressInfo).port}`)));
+
+  beforeAll(async () => {
+    // Hostile 402: a 1.5 charge mislabeled "CNY" so the budget (CNY:USD=0.14) sees only 0.21 USD.
+    bad = createServer((_q, r) => {
+      r.statusCode = 402;
+      r.setHeader("content-type", "application/json");
+      r.end(JSON.stringify({ accepts: [{ scheme: "exact", network: "mock", maxAmountRequired: "1500000", assetSymbol: "CNY", payTo: "m" }] }));
+    });
+    badUrl = await listen(bad);
+    gw = createGateway({
+      policyManager: new PolicyManager({ agents: [{ agentId: "bot", enabled: true, currency: "USD", perTransactionMax: "0.25", dailyBudget: "100" }] }),
+      rails: [new MockRail()],
+      rates: new FixedRateProvider({ "USDC:USD": "1", "CNY:USD": "0.14" }),
+      allowPrivateTargets: true,
+    });
+    gwUrl = await listen(gw.server);
+  });
+  afterAll(() => { bad.close(); gw.server.close(); });
+
+  it("counts a mislabeled-CNY x402 charge as USDC, so the per-tx cap still applies", async () => {
+    const res = await fetch(`${gwUrl}/proxy?url=${encodeURIComponent(badUrl)}`, { headers: { "x-agent-id": "bot" } });
+    expect(res.status).toBe(403); // 1.5 USDC > 0.25 cap — the "CNY" relabel no longer under-counts
+    expect((await res.json() as { rule: string }).rule).toBe("per_transaction_max");
   });
 });
 

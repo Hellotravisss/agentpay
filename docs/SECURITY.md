@@ -29,10 +29,15 @@ design rationale see [ARCHITECTURE.md](ARCHITECTURE.md#threat-model).
   connection uses). Credential headers (`X-PAYMENT`, `Authorization`, `Cookie`)
   are stripped before any **cross-origin** redirect. Opt in with
   `allowPrivateTargets` for local testing only.
-- **x402 asset allowlist** — the EIP-3009 signer refuses to sign for any token
-  not on a per-network allowlist (default: canonical USDC), so a malicious `402`
-  can't trick the wallet into authorizing a transfer of a different, more
-  valuable token. Authorization validity is clamped (`maxAuthorizationSeconds`).
+- **x402 asset & currency binding** — the EIP-3009 signer refuses to sign for
+  any token not on a per-network allowlist (default: canonical USDC), so a
+  malicious `402` can't trick the wallet into authorizing a transfer of a
+  different, more valuable token. It also refuses when the requirement's
+  `currency` label doesn't match the settled asset's symbol, and the gateway
+  values an x402 charge as USDC regardless of a merchant-supplied `assetSymbol`
+  — together these stop a merchant from mislabeling the currency (e.g. "CNY") so
+  the FX-based budget under-counts while the chain still moves USDC.
+  Authorization validity is clamped (`maxAuthorizationSeconds`).
 - **No double-spend under concurrency** — the decide → execute → record window
   is serialized per agent, so concurrent payments can't both pass the budget
   check (which reads the ledger) before either is recorded.

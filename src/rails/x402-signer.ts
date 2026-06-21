@@ -64,6 +64,14 @@ export interface Eip3009SignerOptions {
    * asset that isn't on this list is refused.
    */
   allowedAssets?: Record<string, Hex[]>;
+  /**
+   * Symbol the settled asset is denominated in (default "USDC"). The signer
+   * refuses unless `requirement.currency` matches it. This stops a merchant from
+   * mislabeling the currency (e.g. "CNY") so the policy budget — which values the
+   * payment via that currency's FX rate — under-counts, while the chain still
+   * transfers `amount` units of USDC.
+   */
+  assetSymbol?: string;
   /** Hard cap (seconds) on how long a signed authorization stays valid, regardless of what the 402 asks. */
   maxAuthorizationSeconds?: number;
   /** Injectable clock for tests. */
@@ -83,6 +91,7 @@ export function createEip3009Signer(options: Eip3009SignerOptions) {
     "base-sepolia": [DEFAULT_USDC["base-sepolia"]!],
   };
   const maxAuthSeconds = options.maxAuthorizationSeconds ?? 600;
+  const assetSymbol = options.assetSymbol ?? "USDC";
 
   return async (ctx: PaymentContext): Promise<string> => {
     const { requirement: req } = ctx;
@@ -98,6 +107,10 @@ export function createEip3009Signer(options: Eip3009SignerOptions) {
     if (!allowed.some((a) => a.toLowerCase() === asset.toLowerCase())) {
       // Refuse to sign a transfer of a token the operator hasn't allowlisted.
       throw new Error(`Refusing to sign: asset ${asset} is not allowlisted for "${req.network}"`);
+    }
+    if (req.currency.toUpperCase() !== assetSymbol.toUpperCase()) {
+      // Currency must match the settled asset, or the policy budget under-counts the real spend.
+      throw new Error(`Refusing to sign: currency "${req.currency}" does not match settlement asset "${assetSymbol}"`);
     }
 
     const nowSec = Math.floor(now() / 1000);
