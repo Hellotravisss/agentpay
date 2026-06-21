@@ -160,7 +160,7 @@
     <div class="grid" id="agents"></div>
   </section>
   <section>
-    <div class="h"><h2>API keys</h2><span class="line"></span><button class="btn" onclick="openKeyForm()">＋ new key</button></div>
+    <div class="h"><h2>API keys</h2><span class="line"></span><button class="btn" data-action="new-key">＋ new key</button></div>
     <div id="keys"></div>
   </section>
   <section>
@@ -294,7 +294,7 @@ function agentCard(a, spend) {
   return '<div class="card">'
     + '<div class="top"><span class="name">' + esc(a.agentId) + '</span><span class="grow"></span>'
     + '<span class="chip ' + (a.enabled ? "usd" : "off") + '">' + (a.enabled ? esc(spend.currency) : "disabled") + "</span>"
-    + '<button class="iconbtn" title="edit" onclick=\'editAgent(' + JSON.stringify(JSON.stringify(a)) + ')\'>'
+    + '<button class="iconbtn" title="edit" data-action="edit-agent" data-agent-id="' + esc(a.agentId) + '">'
     + '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg></button></div>'
     + meter("today", spend.spentToday, L.dailyBudget, spend.currency)
     + meter("month", spend.spentThisMonth, L.monthlyBudget, spend.currency)
@@ -312,7 +312,7 @@ async function loadAgents() {
   cache.agents = agents;
   const spends = await Promise.all(agents.map((a) => getJSON("/admin/spend/" + encodeURIComponent(a.agentId))));
   const cards = agents.map((a, i) => agentCard(a, spends[i])).join("");
-  $("agents").innerHTML = cards + '<button class="addcard" onclick="addAgent()">＋ add agent</button>';
+  $("agents").innerHTML = cards + '<button class="addcard" data-action="add-agent">＋ add agent</button>';
   $("s-agents").textContent = agents.length;
 }
 
@@ -327,8 +327,8 @@ async function loadApprovals() {
       + ' <span style="color:var(--faint)">(' + esc(r.amount) + " " + esc(r.currency) + ")</span></td>"
       + "<td>" + esc(r.payTo) + '</td><td class="wrap">' + esc(r.resource) + "</td>"
       + '<td class="mono">' + timeOf(a.createdAt) + "</td>"
-      + '<td><button class="btn approve" onclick="decide(\'' + a.id + "','approve')\">approve</button> "
-      + '<button class="btn reject" onclick="decide(\'' + a.id + "','reject')\">reject</button></td></tr>";
+      + '<td><button class="btn approve" data-action="decide" data-id="' + esc(a.id) + '" data-decision="approve">approve</button> '
+      + '<button class="btn reject" data-action="decide" data-id="' + esc(a.id) + '" data-decision="reject">reject</button></td></tr>';
   }).join("");
   $("approvals").innerHTML = '<div class="tablewrap"><table><thead><tr><th>agent</th><th>amount</th><th>payee</th><th>resource</th><th>held</th><th></th></tr></thead><tbody>' + rows + "</tbody></table></div>";
 }
@@ -366,7 +366,7 @@ async function loadKeys() {
   const rows = keys.map((k) => {
     const expired = k.expiresAt && Date.now() >= k.expiresAt;
     const status = k.revokedAt ? '<span class="pill rejected">revoked</span>' : expired ? '<span class="pill held">expired</span>' : '<span class="pill approved">active</span>';
-    const act = k.revokedAt ? "" : '<button class="btn reject" onclick="revokeKey(\'' + k.id + "','" + esc(k.label) + "')\">revoke</button>";
+    const act = k.revokedAt ? "" : '<button class="btn reject" data-action="revoke-key" data-id="' + esc(k.id) + '" data-label="' + esc(k.label) + '">revoke</button>';
     return "<tr><td>" + esc(k.label) + "</td><td>" + esc(k.agentId) + '</td><td class="mono">' + new Date(k.createdAt).toISOString().slice(0, 10) + "</td>"
       + '<td class="mono">' + (k.lastUsedAt ? timeOf(k.lastUsedAt) : "—") + "</td><td>" + status + "</td><td>" + act + "</td></tr>";
   }).join("");
@@ -420,7 +420,7 @@ function openModal(a, isNew) {
   $("overlay").classList.add("show");
 }
 function closeModal() { $("overlay").classList.remove("show"); }
-function editAgent(json) { openModal(JSON.parse(json), false); }
+function editAgent(agentId) { const a = (cache.agents || []).find((x) => x.agentId === agentId); if (a) openModal(a, false); }
 function addAgent() { openModal({}, true); }
 
 function buildPolicy() {
@@ -452,6 +452,19 @@ const anyOverlayOpen = () => OVERLAYS.some((id) => $(id).classList.contains("sho
 const closeAllOverlays = () => OVERLAYS.forEach((id) => $(id).classList.remove("show"));
 OVERLAYS.forEach((id) => $(id).addEventListener("click", (e) => { if (e.target === $(id)) $(id).classList.remove("show"); }));
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAllOverlays(); });
+
+// Event delegation: data lives in data-* attributes (HTML-attribute-encoded), never
+// concatenated into inline onclick handlers, so a stray quote can't become script.
+document.addEventListener("click", (e) => {
+  const el = e.target.closest && e.target.closest("[data-action]");
+  if (!el) return;
+  const d = el.dataset;
+  if (d.action === "edit-agent") editAgent(d.agentId);
+  else if (d.action === "add-agent") addAgent();
+  else if (d.action === "new-key") openKeyForm();
+  else if (d.action === "decide") decide(d.id, d.decision);
+  else if (d.action === "revoke-key") revokeKey(d.id, d.label);
+});
 
 async function refresh() {
   try {

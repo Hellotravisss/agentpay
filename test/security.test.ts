@@ -9,6 +9,7 @@ import { PolicyManager } from "../src/policy/manager.js";
 import { MockRail } from "../src/rails/mock.js";
 import { FixedRateProvider } from "../src/fx/rates.js";
 import { createPaidApi } from "../demo/paid-api.js";
+import { dashboardHtml } from "../src/gateway/dashboard.js";
 import type { PaymentContext } from "../src/types.js";
 
 describe("SSRF guard", () => {
@@ -183,6 +184,20 @@ describe("x402 signer asset allowlist", () => {
     const signer = createEip3009Signer({ privateKey: KEY, now: () => t0, maxAuthorizationSeconds: 120 });
     const header = await signer(base({ maxTimeoutSeconds: 999999 }));
     expect(decodeXPayment(header).payload.authorization.validBefore).toBe(String(Math.floor(t0 / 1000) + 120));
+  });
+});
+
+describe("dashboard output encoding (XSS)", () => {
+  it("drives actions via data-* delegation, not data-bearing inline onclick", () => {
+    const html = dashboardHtml();
+    expect(html).toContain('data-action="edit-agent"');
+    expect(html).toContain('data-action="revoke-key"');
+    expect(html).toContain('data-action="decide"');
+    // The old XSS-prone patterns (data concatenated into onclick) must not return.
+    expect(html).not.toMatch(/onclick=['"]?editAgent\(/);
+    expect(html).not.toMatch(/onclick=['"]?revokeKey\(/);
+    expect(html).not.toMatch(/onclick=['"]?decide\(/);
+    expect(html).not.toContain("JSON.stringify(JSON.stringify(a))");
   });
 });
 
