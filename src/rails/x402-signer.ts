@@ -114,7 +114,9 @@ export function createEip3009Signer(options: Eip3009SignerOptions) {
     }
 
     const nowSec = Math.floor(now() / 1000);
-    const ttl = Math.min(req.maxTimeoutSeconds ?? maxAuthSeconds, maxAuthSeconds);
+    // Ignore a non-positive / non-finite merchant timeout (would sign an already-expired auth); cap at the max.
+    const requested = req.maxTimeoutSeconds;
+    const ttl = typeof requested === "number" && requested > 0 ? Math.min(requested, maxAuthSeconds) : maxAuthSeconds;
     const authorization: X402Authorization = {
       from: account.address,
       to: req.payTo as Hex,

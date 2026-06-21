@@ -130,6 +130,24 @@ export function createGateway(options: GatewayOptions): Gateway {
       return sendJson(res, 401, { error: "admin_unauthorized", message: "Send Authorization: Bearer <admin token> or X-Admin-Token" });
     }
 
+    // CSRF: reject a cross-origin admin mutation. Browsers always send Origin on a
+    // state-changing cross-site request; same-origin (the dashboard) and non-browser
+    // clients (no Origin) pass. This protects the open/no-token deployment too.
+    if (url.pathname.startsWith("/admin/") && req.method !== "GET" && req.method !== "HEAD") {
+      const origin = headerValue(req, "origin");
+      if (origin) {
+        let originHost: string | null = null;
+        try {
+          originHost = new URL(origin).host;
+        } catch {
+          originHost = null;
+        }
+        if (originHost !== headerValue(req, "host")) {
+          return sendJson(res, 403, { error: "csrf_blocked", message: "Cross-origin admin request rejected" });
+        }
+      }
+    }
+
     if (url.pathname === "/admin/policy") {
       return sendJson(res, 200, policy.snapshot());
     }
@@ -144,7 +162,8 @@ export function createGateway(options: GatewayOptions): Gateway {
 
     if (url.pathname === "/admin/audit") {
       const agent = url.searchParams.get("agent");
-      const limit = Number(url.searchParams.get("limit") ?? 50);
+      const raw = Number(url.searchParams.get("limit") ?? 50);
+      const limit = Number.isFinite(raw) ? Math.min(Math.max(1, Math.floor(raw)), 1000) : 50; // clamp; reject NaN/neg/huge
       return sendJson(res, 200, { entries: agent ? audit.forAgent(agent, limit) : audit.tail(limit) });
     }
 
@@ -464,7 +483,8 @@ export function createGateway(options: GatewayOptions): Gateway {
     if (token) {
       const viaStore = keys.verify(token);
       if (viaStore) return viaStore;
-      if (options.apiKeys?.[token]) return options.apiKeys[token];
+      // Object.hasOwn so "__proto__"/"constructor" can't resolve to a prototype value.
+      if (options.apiKeys && Object.hasOwn(options.apiKeys, token)) return options.apiKeys[token];
     }
     // A configured legacy map, or requireApiKey, means Bearer is mandatory — no X-Agent-Id fallback.
     if (options.requireApiKey || options.apiKeys) return undefined;

@@ -94,13 +94,16 @@ function scaleRate(s: string): bigint {
 /**
  * Default fetcher backed by exchangerate.host's free convert endpoint. Suitable
  * for fiat pairs (CNY:USD, ...); supply your own RateFetcher for crypto assets
- * or a paid provider. Network failures resolve to undefined (the pair simply
- * isn't refreshed).
+ * or a paid provider. Network failures (and a hung provider, via the timeout)
+ * resolve to undefined — the pair simply isn't refreshed and ages toward the
+ * staleness limit rather than stalling the request that triggered the refresh.
  */
-export function httpRateFetcher(baseUrl = "https://api.exchangerate.host"): RateFetcher {
+export function httpRateFetcher(baseUrl = "https://api.exchangerate.host", timeoutMs = 5000): RateFetcher {
   return async (from, to) => {
     try {
-      const res = await fetch(`${baseUrl}/convert?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      const res = await fetch(`${baseUrl}/convert?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
+        signal: AbortSignal.timeout(timeoutMs),
+      });
       if (!res.ok) return undefined;
       const body = (await res.json()) as { result?: number };
       return typeof body.result === "number" && body.result > 0 ? scaleRate(String(body.result)) : undefined;

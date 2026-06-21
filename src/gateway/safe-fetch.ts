@@ -36,7 +36,10 @@ export interface SafeRequestOptions {
   method?: string;
   headers?: Record<string, string>;
   body?: Buffer;
+  /** Per-socket idle timeout (resets on activity). */
   timeoutMs?: number;
+  /** Hard wall-clock deadline across all hops AND body streaming — bounds slow-trickle. */
+  overallTimeoutMs?: number;
   maxRedirects?: number;
   /** Allow private/loopback targets (local testing only). */
   allowPrivateTargets?: boolean;
@@ -48,6 +51,10 @@ export async function safeRequest(urlStr: string, opts: SafeRequestOptions = {})
   const lookup = guardedLookup(opts.allowPrivateTargets ?? false);
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxRedirects = opts.maxRedirects ?? 5;
+  // One deadline for the whole exchange. The per-socket idle timeout resets on every
+  // byte, so a slow trickle could otherwise hold a connection open forever; this caps
+  // total time across redirects and while the caller streams the body.
+  const deadline = AbortSignal.timeout(opts.overallTimeoutMs ?? 30_000);
 
   let url = new URL(urlStr);
   let method = (opts.method ?? "GET").toUpperCase();
@@ -60,7 +67,7 @@ export async function safeRequest(urlStr: string, opts: SafeRequestOptions = {})
     const host = url.hostname.replace(/^\[|\]$/g, "");
     if (!(opts.allowPrivateTargets ?? false) && isIP(host) && isPrivateIp(host)) throw blocked(host);
 
-    const res = await sendOnce(url, method, headers, body, lookup, timeoutMs);
+    const res = await sendOnce(url, method, headers, body, lookup, timeoutMs, deadline);
     const status = res.statusCode ?? 0;
     const location = res.headers.location;
 
@@ -93,10 +100,13 @@ function sendOnce(
   body: Buffer | undefined,
   lookup: ReturnType<typeof guardedLookup>,
   timeoutMs: number,
+  signal: AbortSignal,
 ): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     const mod = url.protocol === "https:" ? https : http;
-    const req = mod.request(url, { method, headers, lookup, timeout: timeoutMs }, resolve);
+    // `signal` aborts the request AND, once streaming, destroys the socket — so the
+    // overall deadline also bounds a slow-trickle response body, not just the headers.
+    const req = mod.request(url, { method, headers, lookup, timeout: timeoutMs, signal }, resolve);
     req.on("timeout", () => req.destroy(new Error("upstream timeout")));
     req.on("error", reject);
     if (body && body.length > 0) req.write(body);

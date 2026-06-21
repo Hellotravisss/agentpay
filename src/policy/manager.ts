@@ -97,7 +97,9 @@ export function validateAgentPolicy(input: unknown, agentIdFromPath: string): Ag
   }
 
   if (o.maxTransactionsPerDay !== undefined && o.maxTransactionsPerDay !== null) {
-    const n = Number(o.maxTransactionsPerDay);
+    const v = o.maxTransactionsPerDay;
+    if (typeof v !== "number" && typeof v !== "string") throw new Error("maxTransactionsPerDay must be a number"); // reject arrays/objects/booleans
+    const n = Number(v);
     if (!Number.isInteger(n) || n < 0) throw new Error("maxTransactionsPerDay must be a non-negative integer");
     policy.maxTransactionsPerDay = n;
   }

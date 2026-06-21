@@ -245,10 +245,11 @@ const timeOf = (ms) => new Date(ms).toISOString().slice(11, 19);
 const startOfUtcDay = (ms) => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
 
 // Admin token (used only when the gateway runs with ADMIN_TOKEN). Seed it from
-// the URL (#token=… or ?token=…) once, then keep it in localStorage.
+// the URL fragment (#token=…) once, then keep it in localStorage. Only the hash
+// is accepted — never ?token=, which would leak the secret into server/proxy logs.
 let ADMIN_TOKEN = localStorage.getItem("agentpay_admin_token") || "";
 (function seedToken() {
-  const m = (location.hash + "&" + location.search).match(/token=([^&]+)/);
+  const m = location.hash.match(/token=([^&]+)/);
   if (m) { ADMIN_TOKEN = decodeURIComponent(m[1]); localStorage.setItem("agentpay_admin_token", ADMIN_TOKEN); history.replaceState(null, "", location.pathname); }
 })();
 

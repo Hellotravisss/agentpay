@@ -59,6 +59,11 @@ function expandV6(ip: string): number[] | null {
   return groups.length === 8 ? groups : null;
 }
 
+/** Treat two hextets as a packed IPv4 (a.b.c.d) and classify it. */
+function embeddedV4Private(hi: number, lo: number): boolean {
+  return isPrivateV4(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
+}
+
 function isPrivateV6(ip: string): boolean {
   const g = expandV6(ip);
   if (!g) return true; // unparseable → block
@@ -66,9 +71,11 @@ function isPrivateV6(ip: string): boolean {
   if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return true; // ::1 loopback (any notation)
   if ((g[0]! & 0xfe00) === 0xfc00) return true; // unique-local fc00::/7
   if ((g[0]! & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
-  if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff) {
-    return isPrivateV4(`${g[6]! >> 8}.${g[6]! & 0xff}.${g[7]! >> 8}.${g[7]! & 0xff}`); // IPv4-mapped
-  }
+  const zeroHi = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0;
+  if (zeroHi && g[4] === 0 && g[5] === 0xffff) return embeddedV4Private(g[6]!, g[7]!); // IPv4-mapped ::ffff:a.b.c.d
+  if (zeroHi && g[4] === 0 && g[5] === 0) return embeddedV4Private(g[6]!, g[7]!); // IPv4-compatible ::a.b.c.d (deprecated)
+  if (g[0] === 0x0064 && g[1] === 0xff9b) return embeddedV4Private(g[6]!, g[7]!); // NAT64 well-known 64:ff9b::/96
+  if (g[0] === 0x2002) return embeddedV4Private(g[1]!, g[2]!); // 6to4 2002:V4::/48
   return false;
 }
 

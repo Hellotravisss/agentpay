@@ -47,6 +47,7 @@ describe("validateAgentPolicy", () => {
     expect(() => validateAgentPolicy({ currency: "USD", dailyBudget: "1.2.3" }, "bot")).toThrow(/dailyBudget|decimal/);
     expect(() => validateAgentPolicy({ currency: "USD", agentId: "other" }, "bot")).toThrow(/match/);
     expect(() => validateAgentPolicy({ currency: "USD", maxTransactionsPerDay: -1 }, "bot")).toThrow(/integer/);
+    expect(() => validateAgentPolicy({ currency: "USD", maxTransactionsPerDay: [5] }, "bot")).toThrow(/number/); // arrays/objects rejected, not coerced
   });
 });
 

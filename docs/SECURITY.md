@@ -41,23 +41,41 @@ design rationale see [ARCHITECTURE.md](ARCHITECTURE.md#threat-model).
 - **No double-spend under concurrency** — the decide → execute → record window
   is serialized per agent, so concurrent payments can't both pass the budget
   check (which reads the ledger) before either is recorded.
-- **DoS limits** — 1 MiB request-body cap (`413`), 30 s upstream fetch timeout,
-  and the upstream response is streamed, never buffered whole into memory.
+- **Admin CSRF defense** — admin mutations reject a request whose `Origin` host
+  doesn't match `Host`. Browsers always send `Origin` on cross-site
+  state-changing requests, so a malicious page can't drive `/admin/*` even in the
+  open/no-token deployment; same-origin (the dashboard) and non-browser clients
+  pass. The admin token is only seeded from the URL **fragment** (`#token=`),
+  never `?token=`, so it can't leak into server/proxy logs.
+- **DoS limits** — 1 MiB request-body cap (`413`); a per-socket idle timeout
+  **and** a hard overall wall-clock deadline (so a slow-trickle body can't hold a
+  connection open indefinitely); the FX rate fetch is itself timed out so a hung
+  provider can't stall the payment path; responses are streamed, never buffered
+  whole; `/admin/audit?limit=` is clamped to `[1, 1000]`.
 - **Money & credential integrity** — exact `bigint` arithmetic (no floats near
   amounts), FX rounds up (budget-conservative), API keys stored only as
-  SHA-256 hashes (raw secret shown once), and the upstream `Authorization`
-  header is never forwarded to merchants.
+  SHA-256 hashes (raw secret shown once), prototype-chain tokens
+  (`__proto__`/`constructor`) can't authenticate via the legacy key map, and the
+  upstream `Authorization` header is never forwarded to merchants.
 
 Each item above has regression coverage in [`test/security.test.ts`](../test/security.test.ts).
 
 ## Known residuals
 
-Called out so they aren't silent. Neither bites a deployment that follows the
+Called out so they aren't silent. None bites a deployment that follows the
 checklist below.
 
-- **Admin CSRF** — only if the operator runs with **no `ADMIN_TOKEN`** *and*
-  exposes the port to a browser. Setting a token or keeping the loopback bind
-  removes it.
+- **Changing an agent's base `currency` resets its spend window.** Historical
+  receipts are stamped with the currency in effect when they executed, so
+  re-denominating an agent (admin-only) orphans prior spend and re-opens the
+  daily/monthly budget for that window. Admin-only and self-inflicted (an admin
+  can already raise the budget directly), but re-convert at read time or block
+  the change when prior spend exists if this matters to you.
+- **Spend is recorded at authorization, not settlement confirmation.** For x402
+  the gateway records the receipt once it signs + retries; it can't see whether
+  the facilitator ultimately settles on-chain. A merchant returning 402s it never
+  settles can grief an agent's budget (no theft, no value moved) — closing this
+  needs on-chain settlement polling.
 - **No up-front approval reservation** — concurrent held payments are
   re-checked against the budget at execution time rather than reserving the
   amount when held; they can't exceed the budget, but a burst of holds isn't

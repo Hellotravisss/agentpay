@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { createServer, type Server } from "node:http";
 import { isBlockedTarget, isPrivateIp, guardedLookup } from "../src/gateway/ssrf.js";
 import { safeRequest, readStreamText } from "../src/gateway/safe-fetch.js";
+import { httpRateFetcher } from "../src/fx/caching.js";
 import { createEip3009Signer, decodeXPayment, DEFAULT_USDC } from "../src/rails/x402-signer.js";
 import { createGateway, type Gateway } from "../src/gateway/server.js";
 import { PolicyManager } from "../src/policy/manager.js";
@@ -27,6 +28,15 @@ describe("SSRF guard", () => {
     for (const ip of ["0::1", "0:0:0:0:0:0:0:1", "::ffff:7f00:1", "::ffff:127.0.0.1", "::"]) {
       expect(isPrivateIp(ip)).toBe(true);
     }
+  });
+
+  it("catches embedded-IPv4 IPv6 (compat / 6to4 / NAT64) pointing at private space", () => {
+    for (const ip of ["::127.0.0.1", "::169.254.169.254", "2002:7f00:0001::", "64:ff9b::127.0.0.1", "::ffff:10.0.0.1"]) {
+      expect(isPrivateIp(ip)).toBe(true);
+    }
+    // ...but the same wrappers around a PUBLIC v4 stay allowed (no over-blocking).
+    expect(isPrivateIp("2002:0808:0808::")).toBe(false); // 6to4 of 8.8.8.8
+    expect(isPrivateIp("64:ff9b::8.8.8.8")).toBe(false); // NAT64 of 8.8.8.8
   });
 
   it("blocks loopback/metadata/localhost targets and passes a public IP", async () => {
@@ -191,6 +201,15 @@ describe("x402 signer asset allowlist", () => {
     const header = await signer(base({ maxTimeoutSeconds: 999999 }));
     expect(decodeXPayment(header).payload.authorization.validBefore).toBe(String(Math.floor(t0 / 1000) + 120));
   });
+
+  it("ignores a non-positive merchant timeout instead of signing an already-expired auth", async () => {
+    const t0 = Date.UTC(2026, 5, 12, 12, 0, 0);
+    const signer = createEip3009Signer({ privateKey: KEY, now: () => t0, maxAuthorizationSeconds: 300 });
+    for (const bad of [0, -100]) {
+      const header = await signer(base({ maxTimeoutSeconds: bad }));
+      expect(decodeXPayment(header).payload.authorization.validBefore).toBe(String(Math.floor(t0 / 1000) + 300));
+    }
+  });
 });
 
 describe("currency-label budget bypass (x402 asset decoupling)", () => {
@@ -292,6 +311,78 @@ describe("concurrency & DoS limits", () => {
       expect((await res.json() as { error: string }).error).toBe("unparseable_402");
     } finally {
       bad.close();
+    }
+  });
+
+  it("enforces an overall deadline on a slow-trickle response body", async () => {
+    // Sends headers + one byte, then holds the socket open forever. The per-socket
+    // idle timeout would keep resetting on a real trickle; the overall deadline must cap it.
+    const slow = createServer((_q, r) => { r.writeHead(200); r.write("a"); /* never ends */ });
+    await new Promise<void>((res) => slow.listen(0, "127.0.0.1", res));
+    const slowUrl = `http://127.0.0.1:${(slow.address() as AddressInfo).port}/`;
+    try {
+      const resp = await safeRequest(slowUrl, { allowPrivateTargets: true, overallTimeoutMs: 300, timeoutMs: 10_000 });
+      await expect(readStreamText(resp.body, 1_000_000)).rejects.toThrow(); // aborted by the deadline, not hung
+    } finally {
+      slow.close();
+    }
+  });
+
+  it("httpRateFetcher times out a hung FX provider instead of stalling", async () => {
+    const hung = createServer(() => { /* accept, never respond */ });
+    await new Promise<void>((res) => hung.listen(0, "127.0.0.1", res));
+    const base = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`;
+    try {
+      const fetcher = httpRateFetcher(base, 200);
+      expect(await fetcher("CNY", "USD")).toBeUndefined(); // resolves (undefined) within the timeout
+    } finally {
+      hung.close();
+    }
+  });
+});
+
+describe("admin CSRF & auth hardening", () => {
+  const listen = (s: Server): Promise<string> =>
+    new Promise((r) => s.listen(0, "127.0.0.1", () => r(`http://127.0.0.1:${(s.address() as AddressInfo).port}`)));
+
+  it("rejects a cross-origin admin mutation, allows same-origin and non-browser", async () => {
+    const gw = createGateway({
+      policyManager: new PolicyManager({ agents: [{ agentId: "bot", enabled: true, currency: "USD" }] }),
+      rails: [new MockRail()],
+      allowPrivateTargets: true,
+    }); // no adminToken → open mode, where CSRF would otherwise bite
+    const url = await listen(gw.server);
+    const host = url.replace(/^https?:\/\//, "");
+    const put = (origin?: string) =>
+      fetch(`${url}/admin/agents/bot`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", ...(origin ? { origin } : {}) },
+        body: JSON.stringify({ currency: "USD", dailyBudget: "5" }),
+      });
+    try {
+      expect((await put("https://evil.example")).status).toBe(403); // cross-origin → blocked
+      expect((await put(`http://${host}`)).status).toBe(200); // same-origin (Origin matches Host)
+      expect((await put()).status).toBe(200); // no Origin (curl / the agent) → allowed
+    } finally {
+      gw.server.close();
+    }
+  });
+
+  it("a prototype-chain token does not authenticate via the legacy apiKeys map", async () => {
+    const gw = createGateway({
+      policyConfig: { agents: [{ agentId: "bot", enabled: true, currency: "USD" }] },
+      rails: [new MockRail()],
+      apiKeys: { realkey: "bot" },
+      allowPrivateTargets: true,
+    });
+    const url = await listen(gw.server);
+    try {
+      for (const t of ["__proto__", "constructor", "toString"]) {
+        const res = await fetch(`${url}/proxy?url=${encodeURIComponent("http://127.0.0.1:1/")}`, { headers: { authorization: `Bearer ${t}` } });
+        expect(res.status).toBe(401); // not authenticated as any agent
+      }
+    } finally {
+      gw.server.close();
     }
   });
 });
