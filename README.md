@@ -34,12 +34,16 @@ That layer is agentpay. It sits *above* the rails — x402, Alipay, WeChat, mock
 
 ```bash
 npm install
-npm test        # 49 tests: money, FX (+ caching), policy, x402 sigs, persistence, approvals, e2e
+npm test        # 94 tests: money, FX, policy, x402 sigs, persistence, approvals, security, e2e
 npm run demo    # walkthrough: 2 rails, 2 currencies, 1 unified USD budget, human-in-the-loop
 npm run dev     # start the gateway on :4020 (dashboard at http://localhost:4020/admin)
 ```
 
 The demo runs a merchant that accepts USDC (x402-style) **or** CNY (Alipay-style); two agents with different rail preferences get routed differently, and one USD budget governs both — a 0.36 CNY purchase consumes ~0.0504 USD of it. Per-transaction caps, payee blocklists, budget exhaustion, the per-rail spend breakdown, and the audit trail are all shown.
+
+## Install as an agent skill
+
+There's a ready-to-install **agent skill** in [`skill/`](skill/) — a step-by-step runbook an AI assistant (Claude Code, OpenClaw, …) follows to set agentpay up *for* you: install + self-test, write a deny-by-default policy, launch the gateway, **reroute the agent's paid calls through `/proxy`**, then operate it (spend, audit, approvals, live policy edits) and harden for production. It bundles [policy templates](skill/policies.md) and a [troubleshooting + API reference](skill/troubleshooting.md). Point your assistant at [`skill/SKILL.md`](skill/SKILL.md), or install it from a skill marketplace.
 
 ## Policies
 
