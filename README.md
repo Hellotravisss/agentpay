@@ -1,5 +1,10 @@
 # agentpay
 
+[![CI](https://github.com/Hellotravisss/agentpay/actions/workflows/ci.yml/badge.svg)](https://github.com/Hellotravisss/agentpay/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-94%20passing-brightgreen.svg)
+
 A **cross-rail spend-policy gateway for AI agent payments**. It sits between your agents and anything that charges them money — x402-style paid APIs, Alipay/WeChat-style agent payments, whatever comes next — and answers the question every company deploying paying agents will have to answer:
 
 > *"How do I let my agent spend money — across several payment rails — without giving it my wallets?"*
