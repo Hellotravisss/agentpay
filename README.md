@@ -25,6 +25,10 @@ Agents never hold payment credentials. They call paid resources **through** the 
                        └────────────────────────────────────────────────┘      ─▶ ...
 ```
 
+<p align="center"><img src="docs/dashboard.svg" alt="agentpay admin dashboard — live spend vs. budgets, per-rail breakdown, and approve/reject for held payments" width="860"></p>
+
+<p align="center"><sub>The built-in dashboard (<code>GET /admin</code>) — live spend vs. budgets, per-rail breakdown, and one-click approve/reject on held payments.</sub></p>
+
 For how it's built and *why* — design principles, the full 402 request lifecycle, and where the simple parts grow — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Where it fits — the neutral layer
