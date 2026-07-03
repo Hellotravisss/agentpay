@@ -1,10 +1,10 @@
 ---
-name: agent-spend-control
+name: agentpay
 description: Give an AI agent the ability to spend money — pay x402/USDC paid APIs, Alipay/WeChat-style agent payments, or any HTTP 402-gated resource — WITHOUT handing it the wallet, keys, or an uncapped budget. Stands up agentpay, a self-hosted cross-rail spend-policy gateway with per-agent budgets and per-transaction caps in one base currency across all rails, payee allow/blocklists, human-in-the-loop approval for large payments, and an append-only audit log. Use when you want an agent to pay for things (x402, pay-per-call APIs, bookings, purchases) on a capped, audited budget, or when asked to limit/approve/audit what an agent spends.
 homepage: https://github.com/Hellotravisss/agentpay
 ---
 
-# agent-spend-control — set up & operate agentpay for an agent
+# agentpay — set up & operate the spend-control gateway for an agent
 
 This is an **executable runbook**, not a description. When the user wants an AI
 agent to spend money safely (capped, audited, no keys in the agent), follow the
