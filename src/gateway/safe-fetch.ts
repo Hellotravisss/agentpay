@@ -9,7 +9,7 @@ function blocked(host: string): NodeJS.ErrnoException {
   return e;
 }
 
-const SENSITIVE_HEADERS = new Set(["x-payment", "authorization", "cookie"]);
+const SENSITIVE_HEADERS = new Set(["x-payment", "payment-signature", "authorization", "cookie"]);
 
 /** Drop credential headers (case-insensitively) before following a cross-origin redirect. */
 function stripSensitiveHeaders(headers: Record<string, string>): void {

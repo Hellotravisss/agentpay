@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { AgentPolicy, ApprovalStatus, PaymentRequirement, PolicyConfig } from "../types.js";
 import { safeRequest, readStreamText, type SafeResponse } from "./safe-fetch.js";
@@ -11,6 +11,7 @@ import { dashboardHtml } from "./dashboard.js";
 import { evaluate } from "../policy/engine.js";
 import { PolicyManager, validateAgentPolicy } from "../policy/manager.js";
 import { formatAmount, parseAmount } from "../money.js";
+import { normalizeX402Network } from "../rails/x402-networks.js";
 import { convert, FixedRateProvider, type RateProvider } from "../fx/rates.js";
 
 /** Abort an upstream fetch that hangs, so a slow/huge target can't tie up the gateway. */
@@ -375,7 +376,7 @@ export function createGateway(options: GatewayOptions): Gateway {
     } catch {
       return sendJson(res, 502, { error: "unparseable_402", message: "402 response body too large or unreadable" });
     }
-    const requirements = parseRequirements(bodyText, target);
+    const requirements = parseRequirements(bodyText, target, first.headers);
     if (requirements.length === 0) {
       return sendJson(res, 502, { error: "unparseable_402", message: "Target returned 402 without recognizable payment requirements" });
     }
@@ -456,7 +457,9 @@ export function createGateway(options: GatewayOptions): Gateway {
 
       let second: SafeResponse;
       try {
-        second = await fetchTarget({ "X-PAYMENT": receipt.proof });
+        // v2 carries the proof in PAYMENT-SIGNATURE; v1 and non-x402 rails use X-PAYMENT.
+        const proofHeader = requirement.x402Version === 2 ? "PAYMENT-SIGNATURE" : "X-PAYMENT";
+        second = await fetchTarget({ [proofHeader]: receipt.proof });
       } catch (err) {
         return sendJson(res, 502, { error: "upstream_error", message: String(err instanceof Error ? err.message : err) });
       }
@@ -533,14 +536,41 @@ export function route(
  * gateway's simplified shape and the x402 wire shape ({ accepts: [...] } with
  * maxAmountRequired in 6-dp atomic units).
  */
-function parseRequirements(text: string, target: string): PaymentRequirement[] {
-  let body: unknown;
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** x402 v2 sends its requirements base64-encoded in the PAYMENT-REQUIRED header (body may be `{}`). */
+function decodePaymentRequiredHeader(headers: IncomingHttpHeaders): unknown {
+  const h = headers["payment-required"];
+  const value = Array.isArray(h) ? h[0] : h;
+  if (!value) return undefined;
   try {
-    body = JSON.parse(text);
+    return JSON.parse(Buffer.from(value, "base64").toString("utf8"));
   } catch {
-    return [];
+    return undefined;
   }
-  if (typeof body !== "object" || body === null) return [];
+}
+
+/**
+ * Normalize a 402 into PaymentRequirements. Three shapes are understood:
+ *   - x402 v2: `{ x402Version: 2, resource: {url}, accepts: [{ amount (atomic), network (CAIP-2), ... }] }`,
+ *     from the PAYMENT-REQUIRED header or mirrored in the body;
+ *   - x402 v1: `{ accepts: [{ maxAmountRequired (atomic), network, ... }] }` in the body;
+ *   - this gateway's simplified shape: `{ amount (decimal), currency, ... }`.
+ * The version decides how `amount` is read — v2 amounts are atomic units, so
+ * reading "10000" as a decimal would price a 0.01 USDC charge as 10,000.
+ */
+function parseRequirements(text: string, target: string, headers: IncomingHttpHeaders = {}): PaymentRequirement[] {
+  let body: unknown = decodePaymentRequiredHeader(headers);
+  if (body === undefined) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return [];
+    }
+  }
+  if (!isObject(body)) return [];
+  if (body.x402Version === 2) return parseV2Requirements(body, target);
+
   const accepts = (body as { accepts?: unknown[] }).accepts;
   const rawList = Array.isArray(accepts) ? accepts : [body];
 
@@ -550,6 +580,7 @@ function parseRequirements(text: string, target: string): PaymentRequirement[] {
 
     let amount: string | undefined;
     let currency: string | undefined;
+    let x402Version: number | undefined;
     try {
       if (typeof raw.amount === "string") {
         parseAmount(raw.amount); // validate; a malformed amount skips this entry rather than 500-ing later
@@ -561,6 +592,7 @@ function parseRequirements(text: string, target: string): PaymentRequirement[] {
         // merchant-supplied assetSymbol as the policy currency — that lets a low-rate label
         // under-count the budget while the chain still moves USDC.
         currency = "USDC";
+        x402Version = 1;
       }
     } catch {
       continue; // a hostile merchant can't turn a bad amount into a 500
@@ -581,6 +613,39 @@ function parseRequirements(text: string, target: string): PaymentRequirement[] {
       asset: typeof raw.asset === "string" ? raw.asset : undefined,
       maxTimeoutSeconds: typeof raw.maxTimeoutSeconds === "number" ? raw.maxTimeoutSeconds : undefined,
       extra,
+      x402Version,
+    });
+  }
+  return out;
+}
+
+/** x402 v2 `PaymentRequired` → PaymentRequirements, keeping the original objects for the echo. */
+function parseV2Requirements(doc: Record<string, unknown>, target: string): PaymentRequirement[] {
+  const resourceInfo = isObject(doc.resource) ? doc.resource : undefined;
+  const resourceUrl = typeof resourceInfo?.url === "string" ? resourceInfo.url : target;
+  const extensions = isObject(doc.extensions) ? doc.extensions : undefined;
+  const out: PaymentRequirement[] = [];
+
+  for (const raw of Array.isArray(doc.accepts) ? doc.accepts : []) {
+    if (!isObject(raw)) continue;
+    if (typeof raw.payTo !== "string" || typeof raw.network !== "string" || typeof raw.amount !== "string") continue;
+    if (!/^\d+$/.test(raw.amount)) continue; // v2 amounts are atomic units: digits only
+    const extra = isObject(raw.extra) ? (raw.extra as PaymentRequirement["extra"]) : undefined;
+    out.push({
+      scheme: typeof raw.scheme === "string" ? raw.scheme : "exact",
+      network: normalizeX402Network(raw.network),
+      amount: formatAmount(BigInt(raw.amount)),
+      // Same rule as v1: the amount is in the on-chain asset's units and the signer only
+      // signs for allowlisted USDC, so the policy currency is USDC — never a merchant label.
+      currency: "USDC",
+      payTo: raw.payTo,
+      resource: resourceUrl,
+      description: typeof resourceInfo?.description === "string" ? resourceInfo.description : undefined,
+      asset: typeof raw.asset === "string" ? raw.asset : undefined,
+      maxTimeoutSeconds: typeof raw.maxTimeoutSeconds === "number" ? raw.maxTimeoutSeconds : undefined,
+      extra,
+      x402Version: 2,
+      wire: { accepted: raw, resource: resourceInfo, extensions },
     });
   }
   return out;
@@ -622,6 +687,12 @@ function relay(res: ServerResponse, upstream: SafeResponse): void {
   res.statusCode = upstream.status;
   const ct = upstream.headers["content-type"];
   if (ct) res.setHeader("content-type", Array.isArray(ct) ? ct[0]! : ct);
+  // Pass the merchant's settlement receipt through (v2 PAYMENT-RESPONSE, v1 X-PAYMENT-RESPONSE)
+  // so the caller can see the on-chain transaction hash.
+  for (const name of ["payment-response", "x-payment-response"]) {
+    const v = upstream.headers[name];
+    if (v) res.setHeader(name, Array.isArray(v) ? v[0]! : v);
+  }
   // Pipe the body through so a huge upstream response is never buffered whole into memory.
   upstream.body.on("error", () => res.destroy());
   upstream.body.pipe(res);

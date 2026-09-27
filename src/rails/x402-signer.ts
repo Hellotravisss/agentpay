@@ -43,15 +43,29 @@ export interface X402Authorization {
   nonce: Hex;
 }
 
-export interface X402PaymentPayload {
-  x402Version: number;
+export interface X402ExactPayload {
+  signature: Hex;
+  authorization: X402Authorization;
+}
+
+/** v1 X-PAYMENT body. */
+export interface X402PaymentPayloadV1 {
+  x402Version: 1;
   scheme: string;
   network: string;
-  payload: {
-    signature: Hex;
-    authorization: X402Authorization;
-  };
+  payload: X402ExactPayload;
 }
+
+/** v2 PAYMENT-SIGNATURE body: the chosen requirement is echoed verbatim as `accepted`. */
+export interface X402PaymentPayloadV2 {
+  x402Version: 2;
+  resource?: Record<string, unknown>;
+  accepted: Record<string, unknown>;
+  payload: X402ExactPayload;
+  extensions?: Record<string, unknown>;
+}
+
+export type X402PaymentPayload = X402PaymentPayloadV1 | X402PaymentPayloadV2;
 
 export interface Eip3009SignerOptions {
   /** Hex private key of the agent treasury wallet (fund it with testnet USDC for Base Sepolia). */
@@ -108,6 +122,12 @@ export function createEip3009Signer(options: Eip3009SignerOptions) {
       // Refuse to sign a transfer of a token the operator hasn't allowlisted.
       throw new Error(`Refusing to sign: asset ${asset} is not allowlisted for "${req.network}"`);
     }
+    // v2 lets a merchant ask for Permit2 instead of EIP-3009. We only produce EIP-3009
+    // authorizations; signing one for a Permit2 requirement would just fail to settle.
+    const method = req.extra?.assetTransferMethod;
+    if (method !== undefined && method !== "eip3009") {
+      throw new Error(`Refusing to sign: asset transfer method "${method}" is not supported (only eip3009)`);
+    }
     if (req.currency.toUpperCase() !== assetSymbol.toUpperCase()) {
       // Currency must match the settled asset, or the policy budget under-counts the real spend.
       throw new Error(`Refusing to sign: currency "${req.currency}" does not match settlement asset "${assetSymbol}"`);
@@ -145,17 +165,28 @@ export function createEip3009Signer(options: Eip3009SignerOptions) {
       },
     });
 
-    const payload: X402PaymentPayload = {
-      x402Version: 1,
-      scheme: req.scheme,
-      network: req.network,
-      payload: { signature, authorization },
-    };
+    let payload: X402PaymentPayload;
+    if (req.x402Version === 2) {
+      if (!req.wire) throw new Error("x402 v2 requirement is missing its original `accepted` object");
+      // The facilitator checks the signed value against the echoed requirement — they must agree exactly.
+      if (String(req.wire.accepted.amount) !== authorization.value) {
+        throw new Error("Refusing to sign: signed value does not match the requirement's amount");
+      }
+      payload = {
+        x402Version: 2,
+        ...(req.wire.resource ? { resource: req.wire.resource } : {}),
+        accepted: req.wire.accepted,
+        payload: { signature, authorization },
+        ...(req.wire.extensions ? { extensions: req.wire.extensions } : {}),
+      };
+    } else {
+      payload = { x402Version: 1, scheme: req.scheme, network: req.network, payload: { signature, authorization } };
+    }
     return Buffer.from(JSON.stringify(payload)).toString("base64");
   };
 }
 
-/** Decode an X-PAYMENT header produced by createEip3009Signer (for tests/inspection). */
+/** Decode an X-PAYMENT (v1) or PAYMENT-SIGNATURE (v2) header from createEip3009Signer. */
 export function decodeXPayment(header: string): X402PaymentPayload {
   return JSON.parse(Buffer.from(header, "base64").toString("utf8")) as X402PaymentPayload;
 }

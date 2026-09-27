@@ -3,7 +3,7 @@
 [![CI](https://github.com/Hellotravisss/agentpay/actions/workflows/ci.yml/badge.svg)](https://github.com/Hellotravisss/agentpay/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)
-![tests](https://img.shields.io/badge/tests-94%20passing-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-101%20passing-brightgreen.svg)
 
 A **cross-rail spend-policy gateway for AI agent payments**. It sits between your agents and anything that charges them money — x402-style paid APIs, Alipay/WeChat-style agent payments, whatever comes next — and answers the question every company deploying paying agents will have to answer:
 
@@ -43,7 +43,7 @@ That layer is agentpay. It sits *above* the rails — x402, Alipay, WeChat, mock
 
 ```bash
 npm install
-npm test        # 94 tests: money, FX, policy, x402 sigs, persistence, approvals, security, e2e
+npm test        # 101 tests: money, FX, policy, x402 v1+v2, persistence, approvals, security, e2e
 npm run demo    # walkthrough: 2 rails, 2 currencies, 1 unified USD budget, human-in-the-loop
 npm run dev     # start the gateway on :4020 (dashboard at http://localhost:4020/admin)
 ```
@@ -135,7 +135,7 @@ By default a valid Bearer key authenticates *and* `X-Agent-Id` still works (conv
 Rails implement one interface (`src/rails/rail.ts`): `supports(network)` + `pay(ctx) -> receipt`. Adding a rail never touches policy, FX, or routing code. Included:
 
 - **`MockRail`** — instant in-process settlement; instantiate several to simulate a multi-rail deployment.
-- **`X402Rail`** — adapter for [Coinbase's x402](https://www.x402.org/) protocol, with a **real client-side payment implementation**: `createEip3009Signer` produces signed EIP-3009 `transferWithAuthorization` payloads (the X-PAYMENT header) for USDC on Base / Base Sepolia. Signing is fully offline; the merchant's facilitator settles on-chain. Verified two ways: signatures are checked cryptographically in the test suite, **and the rail has settled a real payment on Base Sepolia end to end** (see below).
+- **`X402Rail`** — adapter for [Coinbase's x402](https://www.x402.org/) protocol, with a **real client-side payment implementation**: `createEip3009Signer` produces signed EIP-3009 `transferWithAuthorization` payloads for USDC on Base / Base Sepolia. Speaks **both x402 v1 and v2**: v1 (`X-PAYMENT`, body requirements) and v2 (`PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` / `PAYMENT-RESPONSE` headers, CAIP-2 networks like `eip155:84532`, atomic `amount`, the chosen requirement echoed verbatim as `accepted`). Permit2-only requirements are refused rather than mis-signed. Signing is fully offline; the merchant's facilitator settles on-chain. Verified two ways: signatures are checked cryptographically in the test suite, **and the rail has settled a real payment on Base Sepolia end to end** (see below).
 - **`AlipayActRail`** — adapter shaped for Alipay's agent-payment stack (AI付 under the ACT delegation model); bring your merchant integration via `executePayment`.
 
 Credentials live inside the rail callbacks you supply — the gateway core never touches keys. Planned: Google AP2.

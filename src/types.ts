@@ -24,8 +24,23 @@ export interface PaymentRequirement {
   asset?: string;
   /** Seconds the payment authorization should stay valid (x402 maxTimeoutSeconds). */
   maxTimeoutSeconds?: number;
-  /** Scheme-specific extras; for x402 "exact" this carries the EIP-712 domain { name, version }. */
-  extra?: { name?: string; version?: string };
+  /**
+   * Scheme-specific extras; for x402 "exact" this carries the EIP-712 domain { name, version }
+   * and, in v2, the asset transfer method ("eip3009" | "permit2").
+   */
+  extra?: { name?: string; version?: string; assetTransferMethod?: string };
+  /** x402 protocol version the merchant spoke (1 or 2). Undefined for non-x402 shapes. */
+  x402Version?: number;
+  /**
+   * x402 v2 only: the merchant's original objects, kept verbatim. A v2 payment
+   * payload must echo the chosen requirement back unchanged as `accepted` (the
+   * facilitator compares it field by field), plus the resource and any extensions.
+   */
+  wire?: {
+    accepted: Record<string, unknown>;
+    resource?: Record<string, unknown>;
+    extensions?: Record<string, unknown>;
+  };
 }
 
 /** Everything the policy engine needs to decide on one payment. */
