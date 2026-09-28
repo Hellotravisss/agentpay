@@ -42,6 +42,12 @@ That layer is agentpay. It sits *above* the rails — x402, Alipay, WeChat, mock
 ## Quick start
 
 ```bash
+npx agentpay-gateway      # gateway on http://127.0.0.1:4020, dashboard at /admin (mock rails)
+```
+
+From source:
+
+```bash
 npm install
 npm test        # 110 tests: money, FX, policy, x402 v1+v2, MCP, persistence, approvals, security, e2e
 npm run demo    # walkthrough: 2 rails, 2 currencies, 1 unified USD budget, human-in-the-loop
@@ -66,7 +72,7 @@ over the limit simply isn't signed.
   "mcpServers": {
     "agentpay": {
       "command": "npx",
-      "args": ["tsx", "/path/to/agentpay/src/mcp/cli.ts"],
+      "args": ["-y", "-p", "agentpay-gateway", "agentpay-mcp"],
       "env": { "AGENTPAY_URL": "http://127.0.0.1:4020", "AGENTPAY_API_KEY": "<key from POST /admin/keys>" }
     }
   }

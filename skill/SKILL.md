@@ -122,7 +122,7 @@ AFTER:   GET http://127.0.0.1:4020/proxy?url=https%3A%2F%2Fpaid.example%2Fapi%2F
   (non-402) URLs pass straight through** — the gateway only acts on a 402.
 
 **MCP agents (Claude Desktop/Code, Cursor):** instead of rewriting URLs, register
-the bundled MCP server (`src/mcp/cli.ts`, env `AGENTPAY_URL` + `AGENTPAY_API_KEY`);
+the MCP server (`npx -y -p agentpay-gateway agentpay-mcp`, env `AGENTPAY_URL` + `AGENTPAY_API_KEY`);
 the agent then gets `paid_fetch` and `check_budget` tools. See the README "MCP" section.
 
 Update the agent's code/config to use this proxy form, then re-run its task and

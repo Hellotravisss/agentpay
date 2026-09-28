@@ -1,5 +1,5 @@
 {
-  "name": "agentpay",
+  "name": "agentpay-gateway",
   "version": "0.9.0",
   "description": "Cross-rail spend-policy gateway for AI agent payments: unified multi-currency budgets, rail routing, per-transaction limits, payee allowlists, and full audit logging across agent payment rails (x402-style, Alipay-style).",
   "type": "module",
@@ -9,7 +9,8 @@
     "build": "tsc && cp src/gateway/dashboard.html dist/src/gateway/dashboard.html",
     "test": "vitest run",
     "demo": "tsx demo/run-demo.ts",
-    "mcp": "tsx src/mcp/cli.ts"
+    "mcp": "tsx src/mcp/cli.ts",
+    "prepublishOnly": "npm test && npm run build"
   },
   "engines": {
     "node": ">=20"
@@ -25,6 +26,33 @@
     "viem": "^2.56.9"
   },
   "bin": {
+    "agentpay-gateway": "dist/src/index.js",
     "agentpay-mcp": "dist/src/mcp/cli.js"
-  }
+  },
+  "types": "dist/src/index.d.ts",
+  "files": [
+    "dist/src",
+    "policies",
+    "skill",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hellotravisss/agentpay.git"
+  },
+  "homepage": "https://github.com/Hellotravisss/agentpay",
+  "keywords": [
+    "x402",
+    "mcp",
+    "ai-agent",
+    "agent-payments",
+    "spend-limits",
+    "budget",
+    "usdc",
+    "base",
+    "payment-gateway",
+    "model-context-protocol"
+  ],
+  "mcpName": "io.github.Hellotravisss/agentpay"
 }

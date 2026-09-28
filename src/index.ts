@@ -1,4 +1,5 @@
-import { readFileSync, watch, writeFileSync } from "node:fs";
+#!/usr/bin/env node
+import { existsSync, readFileSync, watch, writeFileSync } from "node:fs";
 import type { ApiKey, AuditEntry, PaymentReceipt, PendingApproval, PolicyConfig } from "./types.js";
 import { createGateway } from "./gateway/server.js";
 import { FixedRateProvider } from "./fx/rates.js";
@@ -44,9 +45,15 @@ export { AlipayActRail, type AlipayActRailConfig } from "./rails/alipay.js";
 export type { PaymentRail } from "./rails/rail.js";
 
 /** CLI entrypoint: `npm run dev` starts a gateway with the example policy and the mock rail. */
-const isMain = process.argv[1]?.endsWith("src/index.ts") || process.argv[1]?.endsWith("dist/index.js");
+const entry = process.argv[1] ?? "";
+const isMain = /(src\/index\.(ts|js)|dist\/index\.js|[\/]agentpay-gateway)$/.test(entry);
 if (isMain) {
-  const policyPath = process.env.POLICY_FILE ?? new URL("../policies/example.json", import.meta.url).pathname;
+  // Source runs from src/, the published build from dist/src/ — find the bundled example either way.
+  const policyPath =
+    process.env.POLICY_FILE ??
+    ["../policies/example.json", "../../policies/example.json"]
+      .map((rel) => new URL(rel, import.meta.url).pathname)
+      .find((p) => existsSync(p))!;
   const readPolicy = () => JSON.parse(readFileSync(policyPath, "utf8")) as PolicyConfig;
   const policyConfig = readPolicy();
   const port = Number(process.env.PORT ?? 4020);
