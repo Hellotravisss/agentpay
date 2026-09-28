@@ -3,7 +3,7 @@
 [![CI](https://github.com/Hellotravisss/agentpay/actions/workflows/ci.yml/badge.svg)](https://github.com/Hellotravisss/agentpay/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)
-![tests](https://img.shields.io/badge/tests-103%20passing-brightgreen.svg)
+![tests](https://img.shields.io/badge/tests-110%20passing-brightgreen.svg)
 
 A **cross-rail spend-policy gateway for AI agent payments**. It sits between your agents and anything that charges them money — x402-style paid APIs, Alipay/WeChat-style agent payments, whatever comes next — and answers the question every company deploying paying agents will have to answer:
 
@@ -43,7 +43,7 @@ That layer is agentpay. It sits *above* the rails — x402, Alipay, WeChat, mock
 
 ```bash
 npm install
-npm test        # 103 tests: money, FX, policy, x402 v1+v2, persistence, approvals, security, e2e
+npm test        # 110 tests: money, FX, policy, x402 v1+v2, MCP, persistence, approvals, security, e2e
 npm run demo    # walkthrough: 2 rails, 2 currencies, 1 unified USD budget, human-in-the-loop
 npm run dev     # start the gateway on :4020 (dashboard at http://localhost:4020/admin)
 ```
@@ -53,6 +53,30 @@ The demo runs a merchant that accepts USDC (x402-style) **or** CNY (Alipay-style
 ## Install as an agent skill
 
 There's a ready-to-install **agent skill** in [`skill/`](skill/) — a step-by-step runbook an AI assistant (Claude Code, OpenClaw, …) follows to set agentpay up *for* you: install + self-test, write a deny-by-default policy, launch the gateway, **reroute the agent's paid calls through `/proxy`**, then operate it (spend, audit, approvals, live policy edits) and harden for production. It bundles [policy templates](skill/policies.md) and a [troubleshooting + API reference](skill/troubleshooting.md). Point your assistant at [`skill/SKILL.md`](skill/SKILL.md), or install it from a skill marketplace.
+
+## Use from Claude / Cursor (MCP)
+
+Give an MCP agent a budget it **cannot** exceed. The `agentpay-mcp` server holds only
+the agent's gateway API key — the wallet and the limits stay in the gateway. Unlike
+honor-system budget tools, the agent is never *asked* to check its budget; a payment
+over the limit simply isn't signed.
+
+```json
+{
+  "mcpServers": {
+    "agentpay": {
+      "command": "npx",
+      "args": ["tsx", "/path/to/agentpay/src/mcp/cli.ts"],
+      "env": { "AGENTPAY_URL": "http://127.0.0.1:4020", "AGENTPAY_API_KEY": "<key from POST /admin/keys>" }
+    }
+  }
+}
+```
+
+Tools: `paid_fetch(url, method?, body?)` — fetch any URL; the gateway pays x402/402
+within policy. Denials and approval holds come back as tool errors the model can
+explain. `check_budget()` — spent today/this month vs limits (via the agent-scoped
+`GET /v1/budget`, which shows an agent only its own numbers).
 
 ## Policies
 

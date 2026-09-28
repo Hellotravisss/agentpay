@@ -45,7 +45,7 @@ If Node is too old, tell the user to upgrade (e.g. via nvm) before continuing.
 git clone https://github.com/Hellotravisss/agentpay
 cd agentpay
 npm install
-npm test          # expect "103 passed" — proves money math, FX, policy, x402 v1+v2, security
+npm test          # expect "110 passed" — proves money math, FX, policy, x402 v1+v2, security
 ```
 If `npm test` fails, stop and report the failure; do not proceed.
 
@@ -120,6 +120,10 @@ AFTER:   GET http://127.0.0.1:4020/proxy?url=https%3A%2F%2Fpaid.example%2Fapi%2F
   then the agent **retries the same request** and it goes through.
 - **No policy** → `403 policy_missing` (the agent isn't in the policy). **Free
   (non-402) URLs pass straight through** — the gateway only acts on a 402.
+
+**MCP agents (Claude Desktop/Code, Cursor):** instead of rewriting URLs, register
+the bundled MCP server (`src/mcp/cli.ts`, env `AGENTPAY_URL` + `AGENTPAY_API_KEY`);
+the agent then gets `paid_fetch` and `check_budget` tools. See the README "MCP" section.
 
 Update the agent's code/config to use this proxy form, then re-run its task and
 confirm a payment shows up in the audit log (Step 6).

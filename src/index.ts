@@ -108,3 +108,4 @@ if (isMain) {
     }
   });
 }
+export { createMcpHandler, runStdio, type McpServerOptions } from "./mcp/server.js";

@@ -180,6 +180,15 @@ export function createGateway(options: GatewayOptions): Gateway {
       return handleProxy(req, res, url);
     }
 
+    // Agent-facing: an agent may read its OWN budget (same credential as /proxy), nothing else.
+    if (url.pathname === "/v1/budget" && req.method === "GET") {
+      const agentId = resolveAgentId(req);
+      if (!agentId) return sendJson(res, 401, { error: "unauthenticated", message: "Send Authorization: Bearer <api key> or X-Agent-Id" });
+      const summary = spendSummary(agentId);
+      if (!summary) return sendJson(res, 403, { error: "policy_missing", agentId });
+      return sendJson(res, 200, summary);
+    }
+
     sendJson(res, 404, { error: "not_found" });
   }
 
@@ -254,8 +263,15 @@ export function createGateway(options: GatewayOptions): Gateway {
   }
 
   function handleSpend(res: ServerResponse, agentId: string): void {
+    const summary = spendSummary(agentId);
+    if (!summary) return sendJson(res, 404, { error: "unknown_agent", agentId });
+    sendJson(res, 200, summary);
+  }
+
+  /** Spent vs limits for one agent, or undefined when it has no policy. */
+  function spendSummary(agentId: string): Record<string, unknown> | undefined {
     const resolved = policy.resolve(agentId);
-    if (!resolved) return sendJson(res, 404, { error: "unknown_agent", agentId });
+    if (!resolved) return undefined;
     const t = now();
 
     const perRail: Record<string, { transactions: number; amounts: Record<string, string> }> = {};
@@ -266,7 +282,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       entry.amounts[r.currency] = formatAmount(prev + parseAmount(r.amount));
     }
 
-    sendJson(res, 200, {
+    return {
       agentId,
       currency: resolved.currency,
       spentToday: formatAmount(ledger.spentSince(agentId, resolved.currency, startOfUtcDay(t), t)),
@@ -280,7 +296,7 @@ export function createGateway(options: GatewayOptions): Gateway {
         maxTransactionsPerDay: resolved.maxTransactionsPerDay ?? null,
         requireApprovalOver: resolved.requireApprovalOver ?? null,
       },
-    });
+    };
   }
 
   async function handleApprovals(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
