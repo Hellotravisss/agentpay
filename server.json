@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Hellotravisss/agentpay",
+  "title": "agentpay",
+  "description": "Enforced spend limits for agents paying x402 APIs. The gateway holds the wallet; the agent can't exceed its budget.",
+  "repository": { "url": "https://github.com/Hellotravisss/agentpay", "source": "github" },
+  "version": "0.9.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "agentpay-gateway",
+      "version": "0.9.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        { "name": "AGENTPAY_URL", "description": "agentpay gateway URL", "default": "http://127.0.0.1:4020" },
+        { "name": "AGENTPAY_API_KEY", "description": "Agent key from POST /admin/keys", "isSecret": true }
+      ]
+    }
+  ]
+}
