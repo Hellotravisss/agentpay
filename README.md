@@ -166,7 +166,7 @@ Credentials live inside the rail callbacks you supply — the gateway core never
 
 ### Buying a real x402 resource on Base Sepolia
 
-This has been run for real: the gateway settled **0.01 USDC on Base Sepolia** through Coinbase's hosted testnet facilitator from a wallet holding zero ETH (the facilitator pays gas — x402 is gasless for the payer). On-chain proof: [`0x3108b5…54ff9d`](https://sepolia.basescan.org/tx/0x3108b58475338d6dc2aa113642b39c0128bfcbd711bff2bdb06691b76154ff9d).
+This has been run for real: the gateway settled **0.01 USDC on Base Sepolia** through Coinbase's hosted testnet facilitator from a wallet holding zero ETH (the facilitator pays gas — x402 is gasless for the payer). On-chain proof: [`0x3108b5…54ff9d`](https://sepolia.basescan.org/tx/0x3108b58475338d6dc2aa113642b39c0128bfcbd711bff2bdb06691b76154ff9d) (x402 v1). **x402 v2** was then settled the same way against Coinbase's official `@x402/express` 2.27 merchant: [`0x8c0256…f668c5`](https://sepolia.basescan.org/tx/0x8c0256c2feb143dcb9b159c86200064c11aec03049feb08f33b6101c70f668c5).
 
 To reproduce — public testnet endpoints come and go, so the reliable path is a local x402 merchant:
 
@@ -216,6 +216,7 @@ This is an MVP. The policy engine, FX layer, cross-rail router, ledger, audit lo
 - [x] Web dashboard for spend + audit + approvals + policy editing (`GET /admin`)
 - [x] Policy hot-reload and an admin API for editing policies
 - [x] Multi-tenant API key management (hashed keys, mint/revoke, per-key expiry)
+- [x] End-to-end x402 v2 settlement against the official v2 merchant — [0.01 USDC on Base Sepolia](https://sepolia.basescan.org/tx/0x8c0256c2feb143dcb9b159c86200064c11aec03049feb08f33b6101c70f668c5)
 - [x] End-to-end x402 settlement against a live facilitator — [0.01 USDC settled on Base Sepolia](https://sepolia.basescan.org/tx/0x3108b58475338d6dc2aa113642b39c0128bfcbd711bff2bdb06691b76154ff9d) (reproduce: [above](#buying-a-real-x402-resource-on-base-sepolia))
 
 Not yet built:

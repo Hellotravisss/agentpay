@@ -56,6 +56,8 @@ gateway.server.listen(PORT, async () => {
   console.log(`status: ${res.status}`);
   console.log(`rail:   ${res.headers.get("x-gateway-rail") ?? "-"}`);
   console.log(`paid:   ${res.headers.get("x-gateway-payment-amount") ?? "-"}`);
+  const settle = res.headers.get("payment-response") ?? res.headers.get("x-payment-response");
+  if (settle) console.log(`tx:     ${JSON.parse(Buffer.from(settle, "base64").toString()).transaction}`);
   console.log(await res.text());
 
   console.log("\naudit trail:");
