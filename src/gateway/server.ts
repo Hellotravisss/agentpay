@@ -398,7 +398,7 @@ export function createGateway(options: GatewayOptions): Gateway {
     if (!chosen) {
       return sendJson(res, 502, {
         error: "no_rail",
-        message: `No configured rail settles any of the offered networks: ${requirements.map((r) => r.network).join(", ")}`,
+        message: `No configured rail can pay any of the offered options (networks: ${requirements.map((r) => r.network).join(", ")})`,
       });
     }
     const { requirement, rail } = chosen;
@@ -510,7 +510,7 @@ export function route(
 ): { requirement: PaymentRequirement; rail: PaymentRail } | undefined {
   const preference = policy.railPreference ?? [];
   const candidates = requirements.flatMap((requirement) => {
-    const rail = rails.find((r) => r.supports(requirement.network));
+    const rail = rails.find((r) => r.supports(requirement.network) && (r.canPay?.(requirement) ?? true));
     return rail ? [{ requirement, rail }] : [];
   });
 

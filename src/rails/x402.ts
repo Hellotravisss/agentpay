@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { PaymentContext, PaymentReceipt } from "../types.js";
+import type { PaymentContext, PaymentReceipt, PaymentRequirement } from "../types.js";
 import type { PaymentRail } from "./rail.js";
 
 export interface X402RailConfig {
@@ -29,6 +29,12 @@ export class X402Rail implements PaymentRail {
 
   supports(network: string): boolean {
     return this.config.networks.includes(network);
+  }
+
+  /** Our signer only produces EIP-3009 authorizations; a Permit2-only option can't be paid here. */
+  canPay(requirement: PaymentRequirement): boolean {
+    const method = requirement.extra?.assetTransferMethod;
+    return method === undefined || method === "eip3009";
   }
 
   async pay(ctx: PaymentContext): Promise<PaymentReceipt> {

@@ -20,7 +20,7 @@ const listen = (s: Server): Promise<string> =>
   new Promise((r) => s.listen(0, "127.0.0.1", () => r(`http://127.0.0.1:${(s.address() as AddressInfo).port}`)));
 
 /** A spec-following x402 v2 merchant. It only unlocks when the PAYMENT-SIGNATURE is genuinely valid. */
-function v2Merchant(opts: { amount: string; mirrorInBody?: boolean; headerless?: boolean; method?: string }) {
+function v2Merchant(opts: { amount: string; mirrorInBody?: boolean; headerless?: boolean; method?: string; permit2First?: boolean }) {
   const seen: { verified?: boolean; payload?: X402PaymentPayloadV2 } = {};
   const accepted = {
     scheme: "exact",
@@ -33,7 +33,9 @@ function v2Merchant(opts: { amount: string; mirrorInBody?: boolean; headerless?:
   };
   const resource = { url: "https://merchant.example/premium", description: "Premium data", mimeType: "application/json" };
   const extensions = { "demo-ext": { info: { k: "v" }, schema: { type: "object" } } };
-  const required = { x402Version: 2, error: "PAYMENT-SIGNATURE header is required", resource, accepts: [accepted], extensions };
+  const permit2Option = { ...accepted, extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" } };
+  const accepts = opts.permit2First ? [permit2Option, accepted] : [accepted];
+  const required = { x402Version: 2, error: "PAYMENT-SIGNATURE header is required", resource, accepts, extensions };
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const sig = req.headers["payment-signature"];
@@ -124,10 +126,18 @@ describe("x402 v2 end to end (spec-following merchant)", () => {
     expect(j.reason).toContain("Amount 5 USDC");
   });
 
-  it("refuses a Permit2 requirement instead of signing an EIP-3009 that cannot settle", async () => {
+  it("skips an unsignable Permit2 option and pays the EIP-3009 option listed after it", async () => {
+    const { res, m } = await buyThroughGateway({ amount: "10000", permit2First: true });
+    expect(res.status).toBe(200);
+    expect(m.seen.verified).toBe(true); // echoed the eip3009 entry, not the permit2 one
+    expect((m.seen.payload?.accepted.extra as { assetTransferMethod?: string } | undefined)?.assetTransferMethod).toBeUndefined();
+  });
+
+  it("refuses a Permit2-only requirement at routing, before anything is signed", async () => {
     const { res, body, m, g } = await buyThroughGateway({ amount: "10000", method: "permit2" });
     expect(res.status).toBe(502);
-    expect(JSON.parse(body).error).toBe("payment_failed");
+    expect(JSON.parse(body).error).toBe("no_rail");
+    expect(g.audit.tail().some((e) => e.event === "payment_failed")).toBe(false); // no bogus failure logged
     expect(m.seen.payload).toBeUndefined(); // nothing was ever sent to the merchant
     expect(g.ledger.spentSince("bot", "USD", 0, Date.now() + 1000)).toBe(0n);
   });
@@ -149,6 +159,12 @@ describe("x402 v2 signer", () => {
     expect(p.x402Version).toBe(2);
     expect(p.accepted).toEqual(base().requirement.wire!.accepted);
     expect(p.payload.authorization.value).toBe("10000");
+  });
+
+  it("still refuses Permit2 at the signer as a second line of defense", async () => {
+    const ctx = base();
+    ctx.requirement.extra = { name: "USDC", version: "2", assetTransferMethod: "permit2" };
+    await expect(createEip3009Signer({ privateKey: KEY })(ctx)).rejects.toThrow(/not supported/);
   });
 
   it("refuses when the signed value would not match the echoed amount", async () => {

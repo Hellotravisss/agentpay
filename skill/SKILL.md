@@ -45,7 +45,7 @@ If Node is too old, tell the user to upgrade (e.g. via nvm) before continuing.
 git clone https://github.com/Hellotravisss/agentpay
 cd agentpay
 npm install
-npm test          # expect "101 passed" — proves money math, FX, policy, x402 v1+v2, security
+npm test          # expect "103 passed" — proves money math, FX, policy, x402 v1+v2, security
 ```
 If `npm test` fails, stop and report the failure; do not proceed.
 
