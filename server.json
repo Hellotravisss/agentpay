@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Hellotravisss/agentpay",
   "title": "agentpay",
-  "description": "Enforced spend limits for agents paying x402 APIs. The gateway holds the wallet; the agent can't exceed its budget.",
+  "description": "Enforced budgets for agents paying x402 APIs: the gateway holds the wallet, not the agent.",
   "repository": { "url": "https://github.com/Hellotravisss/agentpay", "source": "github" },
   "version": "0.9.0",
   "packages": [
