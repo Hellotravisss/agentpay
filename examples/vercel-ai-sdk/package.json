@@ -1,0 +1,8 @@
+{
+  "name": "agentpay-example-vercel-ai-sdk",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "tsx index.ts" },
+  "dependencies": { "ai": "latest", "@ai-sdk/mcp": "latest", "@ai-sdk/anthropic": "latest" },
+  "devDependencies": { "tsx": "^4.23.15" }
+}

@@ -1,6 +1,6 @@
 {
   "name": "agentpay-gateway",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Cross-rail spend-policy gateway for AI agent payments: unified multi-currency budgets, rail routing, per-transaction limits, payee allowlists, and full audit logging across agent payment rails (x402-style, Alipay-style).",
   "type": "module",
   "main": "dist/src/index.js",
@@ -27,7 +27,8 @@
   },
   "bin": {
     "agentpay-gateway": "dist/src/index.js",
-    "agentpay-mcp": "dist/src/mcp/cli.js"
+    "agentpay-mcp": "dist/src/mcp/cli.js",
+    "agentpay-demo": "dist/src/demo.js"
   },
   "types": "dist/src/index.d.ts",
   "files": [

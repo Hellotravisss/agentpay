@@ -55,6 +55,9 @@ describe("MCP server", () => {
       expect(r.isError).toBeUndefined();
       expect(r.content[0]!.text).toContain("[paid 0.10 USDC via x402]");
       expect(r.content[0]!.text).toContain("premium");
+      // Clients that prefer structuredContent (Claude Code does) must still see what was bought.
+      const structured = (r as unknown as { structuredContent: { body: string } }).structuredContent;
+      expect(structured.body).toContain("premium");
       const b = await s.call("check_budget");
       expect(b.content[0]!.text).toContain("Spent today: 0.1 USD of 5");
     } finally { s.close(); }

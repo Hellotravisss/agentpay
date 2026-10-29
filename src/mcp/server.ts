@@ -105,7 +105,8 @@ export function createMcpHandler(opts: McpServerOptions) {
       return text(`agentpay error ${status} ${j.error}: ${String(j.message ?? "")}`, true, j);
     }
     const head = payment ? `[paid ${String(payment.amount)} via ${String(payment.rail)}] ` : "";
-    return text(`${head}HTTP ${status}\n${body}`, status >= 400, payment ? { status, payment } : { status });
+    // The body goes in structuredContent too: clients that prefer it (Claude Code) would otherwise pay and see nothing.
+    return text(`${head}HTTP ${status}\n${body}`, status >= 400, { status, ...(payment ? { payment } : {}), body });
   }
 
   async function checkBudget(): Promise<ToolResult> {

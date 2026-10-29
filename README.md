@@ -62,6 +62,8 @@ There's a ready-to-install **agent skill** in [`skill/`](skill/) — a step-by-s
 
 ## Use from Claude / Cursor (MCP)
 
+**Try it in two minutes:** `npx -p agentpay-gateway agentpay-demo` starts a gateway (mock money) plus a toy paid API. Ready-made agents for the **Claude Agent SDK, Vercel AI SDK, OpenAI Agents SDK and LangChain** are in [`examples/`](examples).
+
 Give an MCP agent a budget it **cannot** exceed. The `agentpay-mcp` server holds only
 the agent's gateway API key — the wallet and the limits stay in the gateway. Unlike
 honor-system budget tools, the agent is never *asked* to check its budget; a payment
